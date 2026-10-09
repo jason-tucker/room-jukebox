@@ -270,6 +270,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@room-jukebox/core':
+        specifier: workspace:*
+        version: link:../../packages/core
       '@room-jukebox/shared':
         specifier: workspace:*
         version: link:../../packages/shared
