@@ -19,9 +19,54 @@ This repository is a pnpm monorepo:
 
 ## Owner setup (Windows)
 
-_To be written during M0._ It will cover downloading the installer from GitHub Releases, the
-SmartScreen "More info, then Run anyway" prompt (the app is unsigned), Smart App Control, the
-single UAC prompt that adds the firewall rules, and display/power settings.
+_M0 throwaway build; the full owner guide is written in M1._
+
+1. Download `RoomJukebox-Setup-<version>.exe` (from GitHub Releases, or during M0 from the
+   `Public\RoomJukebox` share on Tango) and run it. The app is unsigned: on the SmartScreen prompt
+   choose **More info**, then **Run anyway**. If Smart App Control is On, Windows refuses to run it
+   at all.
+2. The installer is per-user. Near the end it asks **once** for administrator rights (UAC) to add two
+   inbound Windows Firewall rules for `Room Jukebox.exe`, valid on every network profile (Windows 11
+   treats new networks as Public):
+   - `Room Jukebox (TCP)`: any local port, from the local subnet and Tailscale (`100.64.0.0/10`);
+   - `Room Jukebox (UDP beacon)`: UDP port 41234, from the local subnet.
+
+   Silent auto-updates never ask again. Uninstalling asks for UAC a second time to remove the rules.
+   If you decline the prompt the install still finishes and tells you to use _Fix firewall_ below.
+
+3. Plug the laptop into the TV. The player window opens full screen on the first display that is not
+   the Windows primary display (the TV, when the laptop screen is primary) and follows the TV when
+   it is unplugged or reconnected.
+
+### Fix firewall
+
+If phones or the other laptop cannot reach the app (or you clicked _Cancel_ on the Windows Security
+Alert, which creates a Block rule), open PowerShell **as administrator** and run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\room-jukebox\resources\fix-firewall.ps1"
+```
+
+(Adjust the path if the app is installed elsewhere; `-ProgramPath <path to Room Jukebox.exe>`
+overrides the executable.) It deletes every firewall rule bound to `Room Jukebox.exe` and re-adds the
+two Allow rules.
+
+### Command-line flags (M0)
+
+Add them to the shortcut's _Target_ after the closing quote of the exe path:
+
+| Flag                        | Effect                                                                                      |
+| --------------------------- | ------------------------------------------------------------------------------------------- |
+| `--mode=hub` (default)      | Runs the embedded server on `LAN_PORT` (env, default 8080) and broadcasts the UDP beacon    |
+| `--mode=player --hub=<url>` | Player only, e.g. `--hub=http://192.168.1.20:8080`; serves the page from `127.0.0.1`        |
+| `--display=<id>`            | Forces the TV display (ids are listed in `selfcheck.json` and the log)                      |
+| `--kiosk`                   | Kiosk + always on top; Esc, F11 and Alt+F4 are ignored, **Ctrl+Shift+Q** quits (M0 only)    |
+| `--windowed`                | A 1280x720 window instead of full screen (testing without a TV)                             |
+| `--occlusion-fix`           | Disables `CalculateNativeWinOcclusion` (gate 8: playback stalls when the window is covered) |
+
+Logs are in `%APPDATA%\RoomJukebox\logs`: `main.log` (rotated at 10 MB, 10 files kept, including the
+TV page's console) and `selfcheck.json` (SQLite, argon2/scrypt, versions, displays, network adapters
+and the Windows network category, written at every start).
 
 ## First run
 
@@ -60,7 +105,27 @@ without Docker. The server can be started with `pnpm --filter server start` (it 
 `LAN_PORT`, default 8080, on `0.0.0.0`; Node runs the TypeScript sources directly via type
 stripping).
 
-Electron and the Windows installer cannot be exercised in the container. They are built by
+### Desktop shell
+
+`pnpm --filter desktop build` builds the SPA (`pnpm --filter web build`) and then bundles the
+Electron main process and preload with esbuild into `apps/desktop/dist/main.cjs` and
+`dist/preload.cjs`. The bundle includes `apps/server`, `packages/core` and `packages/shared`, so
+the packaged app ships no workspace `node_modules`; the built SPA is copied to `resources/web` by
+electron-builder (`extraResources`). In a checkout the shell serves `apps/web/dist` instead.
+
+To cross-build the unsigned Windows installer on Tango (Linux, through Wine):
+
+```sh
+scripts/build-win.sh
+```
+
+It runs the build above in the dev container, then `electron-builder --win --x64 --publish never` in
+the `electronuserland/builder:wine` image (Electron downloads are cached in the Docker volumes
+`room-jukebox-electron-cache` and `room-jukebox-electron-builder-cache`) and copies
+`RoomJukebox-Setup-<version>.exe` and `latest.yml` to `/mnt/user/Public/RoomJukebox` (`OUT_DIR`
+overrides it). It takes about two and a half minutes.
+
+Electron itself (windows, displays, firewall, autoplay) cannot be exercised in the container. They are built by
 `.github/workflows/release.yml` on a Windows runner when a `v*` tag is pushed, which publishes a
 **draft** GitHub Release with a signed `latest.yml`.
 
