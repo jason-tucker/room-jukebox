@@ -1,4 +1,7 @@
-import { contextBridge } from 'electron';
+import { contextBridge, ipcRenderer } from 'electron';
 
-// Intentionally empty for now; the renderer API is added in later milestones.
-contextBridge.exposeInMainWorld('roomJukebox', {});
+// Sandboxed preload: only `electron` may be required here; everything else goes over IPC.
+contextBridge.exposeInMainWorld('jukebox', {
+  selfcheck: (): Promise<unknown> => ipcRenderer.invoke('jukebox:selfcheck'),
+  lastBeacon: (): Promise<unknown> => ipcRenderer.invoke('jukebox:lastBeacon'),
+});

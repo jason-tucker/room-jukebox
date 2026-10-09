@@ -4,9 +4,17 @@ artifactName: 'RoomJukebox-Setup-${version}.${ext}'
 directories:
   output: release
   buildResources: build
+# main.cjs and preload.cjs are self-contained esbuild bundles (server, core and shared included).
 files:
   - dist/**/*
   - package.json
+extraResources:
+  # The built SPA, served by the embedded hub server (Hub mode) or the loopback server (Player mode).
+  - from: ../web/dist
+    to: web
+  # Elevated "Fix firewall" script (README); the wizard will call it later.
+  - from: build/fix-firewall.ps1
+    to: fix-firewall.ps1
 win:
   target:
     - target: nsis
@@ -17,6 +25,7 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: false
   createDesktopShortcut: true
+  include: build/installer.nsh
 publish:
   provider: github
   owner: jason-tucker

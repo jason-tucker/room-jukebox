@@ -8,3 +8,5 @@ allowBuilds:
   electron: true
   # Squirrel.Windows helper pulled in by electron-builder; we ship NSIS, so its script is not needed.
   electron-winstaller: false
+  # esbuild's postinstall only re-verifies the platform binary that @esbuild/<platform> already provides.
+  esbuild: false
