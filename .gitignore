@@ -1,0 +1,28 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+out/
+release/
+coverage/
+*.tsbuildinfo
+
+# test artefacts
+playwright-report/
+test-results/
+
+# secrets and local data (never commit)
+.env*
+*.pem
+*.key
+*.db
+*.db-*
+
+# editor / OS
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.log

@@ -1,0 +1,24 @@
+appId: host.tucker.roomjukebox
+productName: Room Jukebox
+artifactName: 'RoomJukebox-Setup-${version}.${ext}'
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - package.json
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+nsis:
+  perMachine: false
+  oneClick: false
+  allowToChangeInstallationDirectory: false
+  createDesktopShortcut: true
+publish:
+  provider: github
+  owner: jason-tucker
+  repo: room-jukebox
+  releaseType: draft

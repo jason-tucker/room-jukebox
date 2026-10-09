@@ -1,0 +1,26 @@
+{
+  "name": "desktop",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Room Jukebox Windows desktop shell (Electron).",
+  "author": "Jason Tucker",
+  "license": "MIT",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests",
+    "dist:win": "pnpm run build && electron-builder --win"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.10"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "electron": "44.7.0",
+    "electron-builder": "26.17.0",
+    "typescript": "6.0.3",
+    "vitest": "5.0.3"
+  }
+}

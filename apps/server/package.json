@@ -1,0 +1,31 @@
+{
+  "name": "server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Room Jukebox hub: Fastify HTTP + WebSocket server.",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "node src/index.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@fastify/cookie": "11.1.2",
+    "@fastify/cors": "11.3.0",
+    "@fastify/static": "10.1.5",
+    "@fastify/websocket": "11.3.3",
+    "@room-jukebox/core": "workspace:*",
+    "@room-jukebox/shared": "workspace:*",
+    "fastify": "5.12.5",
+    "pino": "10.4.0",
+    "zod": "4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.1",
+    "typescript": "6.0.3",
+    "vitest": "5.0.3"
+  }
+}

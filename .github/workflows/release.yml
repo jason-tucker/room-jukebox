@@ -1,0 +1,73 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: {}
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+
+      - name: Enable pnpm via corepack
+        run: corepack enable && pnpm --version
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Test
+        run: pnpm -r test
+
+      - name: Build web and desktop
+        run: |
+          pnpm --filter web build
+          pnpm --filter desktop build
+
+      - name: Build installer and publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: pnpm --filter desktop exec electron-builder --win --publish always
+
+      - name: Sign latest.yml (Ed25519)
+        shell: bash
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          test -n "$RELEASE_SIGNING_KEY" || { echo "RELEASE_SIGNING_KEY is not set"; exit 1; }
+          node -e '
+            const fs = require("node:fs");
+            const crypto = require("node:crypto");
+            const file = "apps/desktop/release/latest.yml";
+            const key = crypto.createPrivateKey({ key: process.env.RELEASE_SIGNING_KEY, format: "pem" });
+            if (key.asymmetricKeyType !== "ed25519") throw new Error("RELEASE_SIGNING_KEY must be an Ed25519 PEM private key");
+            const signature = crypto.sign(null, fs.readFileSync(file), key);
+            fs.writeFileSync(file + ".sig", signature.toString("base64") + "\n");
+            console.log("wrote " + file + ".sig");
+          '
+          # TODO(M0 updater): the app-side check lives in apps/desktop (electron-updater hook that
+          # downloads latest.yml.sig and verifies it with the compiled-in Ed25519 public key before
+          # any download). Not wired yet; until then the signature is published but not enforced.
+
+      - name: Upload latest.yml and latest.yml.sig to the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            apps/desktop/release/latest.yml \
+            apps/desktop/release/latest.yml.sig \
+            --clobber

@@ -1,0 +1,10 @@
+packages:
+  - apps/*
+  - packages/*
+
+# Dependency lifecycle scripts are denied unless listed here.
+allowBuilds:
+  # Downloads the Electron binary (skipped in the dev container and CI via ELECTRON_SKIP_BINARY_DOWNLOAD).
+  electron: true
+  # Squirrel.Windows helper pulled in by electron-builder; we ship NSIS, so its script is not needed.
+  electron-winstaller: false
