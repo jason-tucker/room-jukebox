@@ -11,6 +11,8 @@ export interface CliOptions {
   /** `false` only with `--windowed` (development without a TV). */
   fullscreen: boolean;
   occlusionFix: boolean;
+  /** Loopback host for the page origin. `localhost` by default: headless Chrome showed YouTube error 150 for label videos on `127.0.0.1` (M0 finding). */
+  loopback: 'localhost' | '127.0.0.1';
 }
 
 export function parseArgs(argv: readonly string[]): CliOptions {
@@ -42,10 +44,17 @@ export function parseArgs(argv: readonly string[]): CliOptions {
     throw new Error(`--display must be a numeric display id, got "${displayFlag}"`);
   }
 
+  const loopbackFlag = str('loopback');
+  if (loopbackFlag !== undefined && loopbackFlag !== 'localhost' && loopbackFlag !== '127.0.0.1') {
+    throw new Error(`--loopback must be "localhost" or "127.0.0.1", got "${loopbackFlag}"`);
+  }
+  const loopback: 'localhost' | '127.0.0.1' = loopbackFlag ?? 'localhost';
+
   return {
     mode,
     hub,
     display,
+    loopback,
     kiosk: flags.has('kiosk'),
     fullscreen: !flags.has('windowed'),
     occlusionFix: flags.has('occlusion-fix'),

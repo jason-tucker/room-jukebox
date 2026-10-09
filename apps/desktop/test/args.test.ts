@@ -10,6 +10,7 @@ describe('parseArgs', () => {
       kiosk: false,
       fullscreen: true,
       occlusionFix: false,
+      loopback: 'localhost',
     });
   });
 
@@ -29,6 +30,7 @@ describe('parseArgs', () => {
       kiosk: true,
       fullscreen: true,
       occlusionFix: true,
+      loopback: 'localhost',
     });
   });
 
@@ -36,4 +38,10 @@ describe('parseArgs', () => {
     expect(() => parseArgs(['--mode=player'])).toThrow(/--hub/);
     expect(() => parseArgs(['--mode=tv'])).toThrow(/--mode/);
   });
+});
+
+it('accepts --loopback=127.0.0.1 and rejects other hosts', async () => {
+  const { parseArgs } = await import('../src/args.ts');
+  expect(parseArgs(['--loopback=127.0.0.1']).loopback).toBe('127.0.0.1');
+  expect(() => parseArgs(['--loopback=example.com'])).toThrow(/--loopback/);
 });

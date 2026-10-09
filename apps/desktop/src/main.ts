@@ -199,10 +199,12 @@ function createWindow(): BrowserWindow {
 }
 
 async function startHub(root: string): Promise<string> {
-  const server = await buildApp({ webRoot: root, loggerInstance: fastifyLogger() });
+  const spikeDataDir = join(app.getPath('userData'), 'data');
+  const server = await buildApp({ webRoot: root, loggerInstance: fastifyLogger(), spikeDataDir });
   try {
-    await server.listen({ port: LAN_PORT, host: '0.0.0.0' });
-    log.info(`hub server listening on 0.0.0.0:${LAN_PORT}`);
+    // Dual-stack so `http://localhost` works whether Chromium picks ::1 or 127.0.0.1.
+    await server.listen({ port: LAN_PORT, host: '::' });
+    log.info(`hub server listening on [::]:${LAN_PORT} (dual-stack)`);
   } catch (err) {
     log.error(`hub server failed to listen on ${LAN_PORT}`, err);
   }
@@ -217,7 +219,7 @@ async function startHub(root: string): Promise<string> {
     log,
   });
   const query = new URLSearchParams({ player: DEVICE_NAME });
-  return `http://127.0.0.1:${LAN_PORT}/tv?${query.toString()}`;
+  return `http://${opts.loopback}:${LAN_PORT}/tv?${query.toString()}`;
 }
 
 async function startPlayer(root: string): Promise<string> {
@@ -225,7 +227,7 @@ async function startPlayer(root: string): Promise<string> {
   log.info(`player loopback server on 127.0.0.1:${server.port}, hub ${opts.hub}`);
   app.once('before-quit', () => void server.close());
   const query = new URLSearchParams({ player: DEVICE_NAME, hub: opts.hub ?? '' });
-  return `http://127.0.0.1:${server.port}/tv?${query.toString()}`;
+  return `http://${opts.loopback}:${server.port}/tv?${query.toString()}`;
 }
 
 async function main(): Promise<void> {
