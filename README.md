@@ -44,7 +44,7 @@ If phones or the other laptop cannot reach the app (or you clicked _Cancel_ on t
 Alert, which creates a Block rule), open PowerShell **as administrator** and run:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\room-jukebox\resources\fix-firewall.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\Room Jukebox\resources\fix-firewall.ps1"
 ```
 
 (Adjust the path if the app is installed elsewhere; `-ProgramPath <path to Room Jukebox.exe>`
