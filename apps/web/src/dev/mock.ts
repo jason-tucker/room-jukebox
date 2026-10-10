@@ -152,6 +152,7 @@ class MockHub {
     publicMode: false,
     hubId: 'mock-hub',
     hubEpoch: 1,
+    search: { unofficialFallback: true },
   };
   playlists: PlaylistInfo[] = [
     {

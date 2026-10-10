@@ -10,6 +10,7 @@ export function SettingsTab(props: TabProps) {
     <>
       <RoomName {...props} />
       <LimitsForm {...props} />
+      <SearchFallback {...props} />
       <WifiForm {...props} />
       <LanPicker {...props} />
       <ApiKey {...props} />
@@ -181,6 +182,34 @@ function LimitsForm({ state, run }: TabProps) {
           {numField('publicPerDay', S.admin.publicPerDay)}
         </div>
         <SaveRow busy={busy} disabled={!valid} />
+      </form>
+    </Section>
+  );
+}
+
+export function SearchFallback({ state, run }: TabProps) {
+  const saved = state.settings.search?.unofficialFallback ?? true;
+  const [on, setOn] = useState(saved);
+  const { busy, patch } = usePatch({ run });
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    void patch({ search: { unofficialFallback: on } });
+  };
+  return (
+    <Section title={S.admin.searchFallback}>
+      <form onSubmit={submit} className="flex flex-col gap-3">
+        <label className="flex min-h-11 items-center gap-3 text-base">
+          <input
+            type="checkbox"
+            role="switch"
+            className="size-6 accent-[var(--rj-accent)]"
+            checked={on}
+            onChange={(e) => setOn(e.target.checked)}
+          />
+          {S.admin.unofficialFallback}
+        </label>
+        <p className="text-base text-muted">{S.admin.unofficialFallbackHint}</p>
+        <SaveRow busy={busy} disabled={on === saved} />
       </form>
     </Section>
   );

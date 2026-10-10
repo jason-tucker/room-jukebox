@@ -266,6 +266,11 @@ export const S = {
     publicPerDay: 'Searches from the public page per day',
     ownerReserve: 'Kept back for the owner',
     dailyTotal: 'Total searches per day',
+    searchFallback: 'Search fallback',
+    unofficialFallback:
+      'When the daily search allowance is used up, read YouTube’s public results page',
+    unofficialFallbackHint:
+      'Not covered by the YouTube API terms and may stop working if YouTube changes its page. Off means search stops when the allowance is gone.',
     wifi: 'Wi-Fi QR on the TV',
     wifiHint: 'Guests scan it to join the Wi-Fi. Leave the name empty to hide it.',
     ssid: 'Wi-Fi name',
