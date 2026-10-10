@@ -74,6 +74,8 @@ export const GuestStateSchema = z.object({
     enabled: z.boolean(),
     remaining: z.number().int().nonnegative().nullable(),
     low: z.boolean(),
+    /** Source the next search would use; absent means the official API (M1 clients). */
+    provider: z.enum(['youtube-api', 'unofficial']).optional(),
   }),
   limits: z.object({
     maxPendingPerGuest: LimitsSchema.shape.maxPendingPerGuest,

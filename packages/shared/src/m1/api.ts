@@ -66,10 +66,15 @@ export const VideoCardSchema = z.object({
   ...screenFields,
 });
 export type VideoCard = z.infer<typeof VideoCardSchema>;
+export const SearchProviderSchema = z.enum(['youtube-api', 'unofficial']);
+export type SearchProvider = z.infer<typeof SearchProviderSchema>;
+
 export const SearchReplySchema = z.object({
   results: z.array(VideoCardSchema),
   remaining: z.number().int().nonnegative().nullable(),
   cached: z.boolean(),
+  /** Which source answered; absent means the official API (M1 clients). */
+  provider: SearchProviderSchema.optional(),
 });
 export type SearchReply = z.infer<typeof SearchReplySchema>;
 
