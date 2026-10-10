@@ -84,13 +84,27 @@ player themselves, so the raw LAN IP is fine for them.
 
 ## Troubleshooting
 
-_To be written as issues are found._ Logs live in `%APPDATA%\RoomJukebox\logs`; settings and the
-tray offer _Download diagnostics_ and _Fix firewall_.
+Logs live in `%APPDATA%\RoomJukebox\logs`; settings and the tray offer _Download diagnostics_ and
+_Fix firewall_. The hub's database is `data.db` in the data folder (`%APPDATA%\RoomJukebox` on
+Windows, `DATA_DIR` or `./data` standalone), with nightly 04:00 backups in `backups\` (7 kept).
 
-### M0 spike pages (temporary, removed in M1)
+| Symptom                                            | Likely cause                                                                                                          | Fix                                                                                                                                                       |
+| -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Admin page says _only works from the home network_ | 403 `forbidden-source`: the phone is on another subnet, or a proxy/tunnel added `X-Forwarded-For`, `Via`, `Cf-*`      | Join the same Wi-Fi as the hub laptop; admin never works through a tunnel                                                                                 |
+| _Too many wrong passwords_                         | 5 failed logins from one device; each further failure doubles the wait (max 15 min)                                   | Wait the time shown, then sign in; a correct password resets the counter                                                                                  |
+| Signed out on every device                         | The owner password was changed (every session is invalidated) or the 12 h session expired                             | Sign in again; the desktop's own token is renewed by the app                                                                                              |
+| `/setup` answers 409                               | A password already exists                                                                                             | Use `/admin`; to start over, quit the app and delete `data.db` (a backup is in `backups\`)                                                                |
+| Search box missing on phones                       | No API key, or today's search budget is used up (resets at midnight Pacific)                                          | Add the key in settings; guests can always use _Find on YouTube_ + _Paste link_                                                                           |
+| "Several videos in a row failed" on the TV         | 5 consecutive fallback videos failed (removed, private, embedding off)                                                | Press _Start Music_ or play from admin; check _Last errors_ in admin and refresh or replace the fallback playlist                                         |
+| TV shows _Reconnecting_ after the app restarted    | The TV window reconnects within 10 s; otherwise the interrupted song is restarted once, then skipped on a 2nd restart | Wait a few seconds; if it stays, reload the TV window                                                                                                     |
+| QR code points at the wrong address                | The laptop has several adapters (VPN, Docker, VirtualBox)                                                             | Admin → LAN: choose the Wi-Fi address                                                                                                                     |
+| Restore a backup by hand (M1)                      | Settings or queue lost                                                                                                | Quit the app, copy a file from `backups\` over `data.db`, delete `data.db-wal` and `data.db-shm`, start the app (the API key needs the same Windows user) |
 
-**No authentication in M0:** every `/api/spike/*` route and the `/ws` socket accept anyone who can
-reach port 8080 on the LAN. Only run the spike on a trusted network.
+### M0 spike pages (temporary)
+
+Off by default from M1: the spike routes exist only with `buildApp({ spike: true })` (standalone:
+`SPIKE=1`). **No authentication:** every `/api/spike/*` route and the role-less `/ws` socket accept
+anyone who can reach port 8080 on the LAN. Only run the spike on a trusted network.
 
 | Page                        | URL                                                              | Purpose                                                                                                                                                                      |
 | --------------------------- | ---------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

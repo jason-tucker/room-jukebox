@@ -53,7 +53,13 @@ describe('spike API + WebSocket', () => {
 
   beforeEach(async () => {
     dataDir = mkdtempSync(join(tmpdir(), 'spike-'));
-    app = await buildApp({ webRoot: '/nonexistent', spikeDataDir: dataDir });
+    app = await buildApp({
+      webRoot: '/nonexistent',
+      spike: true,
+      spikeDataDir: dataDir,
+      dataDir,
+      nightlyBackup: false,
+    });
     await app.ready();
   });
 
@@ -221,9 +227,13 @@ describe('spike API + WebSocket', () => {
 
 describe('spikeAutoplay option', () => {
   it('starts the first matrix video when enabled', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'spike-'));
     const app = await buildApp({
+      spike: true,
       spikeAutoplay: true,
-      spikeDataDir: mkdtempSync(join(tmpdir(), 'spike-')),
+      spikeDataDir: dir,
+      dataDir: dir,
+      nightlyBackup: false,
     });
     try {
       const res = await app.inject({ method: 'GET', url: '/api/spike/state' });
@@ -231,6 +241,18 @@ describe('spikeAutoplay option', () => {
       expect(res.json().nowPlaying).not.toBeNull();
     } finally {
       await app.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('is off by default', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'spike-'));
+    const app = await buildApp({ webRoot: '/nonexistent', dataDir: dir, nightlyBackup: false });
+    try {
+      expect((await app.inject({ url: '/api/spike/state' })).statusCode).toBe(404);
+    } finally {
+      await app.close();
+      rmSync(dir, { recursive: true, force: true });
     }
   });
 });

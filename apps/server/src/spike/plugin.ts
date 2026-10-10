@@ -7,7 +7,7 @@ import {
   SpikeSeekBodySchema,
   type SpikeServerMessage,
 } from '@room-jukebox/shared';
-import type { FastifyInstance, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { WebSocket } from '@fastify/websocket';
 import type { z } from 'zod';
 import { SpikeResults } from './results.ts';
@@ -23,7 +23,14 @@ export interface SpikeOptions {
   session?: SpikeSession;
   /** Start the first matrix video immediately when nothing is playing. */
   autoplay?: boolean;
+  /**
+   * Mount the spike socket at `/ws` (default true). When false the handler is only returned, so
+   * the M1 `/ws` route can hand role-less sockets to it.
+   */
+  mountWs?: boolean;
 }
+
+export type SpikeSocketHandler = (socket: WebSocket, request: FastifyRequest) => void;
 
 function parseBody<T extends z.ZodType>(
   schema: T,
@@ -42,7 +49,10 @@ function parseBody<T extends z.ZodType>(
  * M0 spike routes (`/api/spike/*`) and the spike WebSocket (`/ws`). No auth in M0: anyone on the
  * LAN can drive playback. Replaced by the real session and player auth in M1/M2.
  */
-export async function registerSpike(app: FastifyInstance, options: SpikeOptions): Promise<void> {
+export async function registerSpike(
+  app: FastifyInstance,
+  options: SpikeOptions,
+): Promise<SpikeSocketHandler> {
   const session = options.session ?? new SpikeSession();
   if (options.autoplay && session.snapshot().nowPlaying === null) session.next();
   const results = new SpikeResults(options.dataDir);
@@ -110,7 +120,7 @@ export async function registerSpike(app: FastifyInstance, options: SpikeOptions)
     return { ok: true };
   });
 
-  app.get('/ws', { websocket: true }, (socket, request) => {
+  const onSocket: SpikeSocketHandler = (socket, request) => {
     sockets.add(socket);
     const headerOrigin = request.headers.origin;
     send(socket, { type: 'state', state: session.snapshot() });
@@ -167,5 +177,8 @@ export async function registerSpike(app: FastifyInstance, options: SpikeOptions)
         session.disconnect(playerId);
       }
     });
-  });
+  };
+
+  if (options.mountWs !== false) app.get('/ws', { websocket: true }, onSocket);
+  return onSocket;
 }
