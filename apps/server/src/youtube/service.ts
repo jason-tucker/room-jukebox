@@ -9,11 +9,20 @@ import {
   evaluateVideo,
   recordSearch,
   remainingSearches,
+  SEARCH_LOW_WARNING,
 } from '@room-jukebox/core';
-import type { PrescreenResult, SearchActor, SearchUsage, VideoMeta } from '@room-jukebox/core';
 import type {
+  PrescreenResult,
+  SearchActor,
+  SearchRejection,
+  SearchUsage,
+  VideoMeta,
+} from '@room-jukebox/core';
+import type {
+  GuestState,
   PlaylistInfo,
   ResolveReply,
+  SearchProvider,
   SearchReply,
   SearchesReply,
   VideoCard,
@@ -25,11 +34,27 @@ import { toPlaylistInfo } from '../settings.ts';
 import type { VideoResource, YouTubeApi } from './client.ts';
 import { pickThumbnail, YouTubeHttpError } from './client.ts';
 import { extractPlaylistId, parseIsoDuration } from './ids.ts';
+import { UnofficialSearchError } from './unofficial.ts';
 
 /** M1 keeps search ID lists and video metadata for 24 h. */
 export const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_PLAYLIST_PAGES = 20;
 const PACIFIC = 'America/Los_Angeles';
+
+/**
+ * Budget rejections the results-page fallback may answer. The per-guest/per-IP `interval`
+ * cooldown is not one of them: it still answers 429.
+ */
+const EXHAUSTED: ReadonlySet<SearchRejection> = new Set<SearchRejection>([
+  'daily-quota',
+  'owner-reserve',
+  'public-daily',
+  'guest-daily',
+  'ip-daily',
+]);
+
+const UNAVAILABLE = 'YouTube search is not answering right now.';
+const seconds = (n: number): string => `${n} second${n === 1 ? '' : 's'}`;
 
 /** Lower-cased, whitespace-collapsed, trimmed. */
 export const normaliseQuery = (q: string): string => q.toLowerCase().replace(/\s+/g, ' ').trim();
@@ -105,10 +130,27 @@ export function videoRowFromResource(r: VideoResource, now: number): VideoRow {
   return row;
 }
 
+/** A results-page card as a (non-API) video row, so the shared pre-screen applies to it. */
+function rowFromCard(c: VideoCard, at: number): VideoRow {
+  const row: VideoRow = {
+    videoId: c.videoId,
+    title: c.title,
+    channelTitle: c.channelTitle,
+    thumbnail: c.thumbnail,
+    missing: false,
+    refreshedAt: at,
+  };
+  if (c.durationSec != null) row.durationSec = c.durationSec;
+  if (c.reason === 'live') row.liveBroadcastContent = 'live';
+  return row;
+}
+
 export interface YouTubeServiceOptions {
   repos: Repos;
   settings: SettingsService;
   api: YouTubeApi;
+  /** Results-page search (see `unofficial.ts`); throws `UnofficialSearchError`. */
+  unofficial: (q: string) => Promise<VideoCard[]>;
   now: () => number;
 }
 
@@ -116,12 +158,14 @@ export class YouTubeService {
   #repos: Repos;
   #settings: SettingsService;
   #api: YouTubeApi;
+  #unofficial: (q: string) => Promise<VideoCard[]>;
   #now: () => number;
 
   constructor(options: YouTubeServiceOptions) {
     this.#repos = options.repos;
     this.#settings = options.settings;
     this.#api = options.api;
+    this.#unofficial = options.unofficial;
     this.#now = options.now;
   }
 
@@ -267,7 +311,7 @@ export class YouTubeService {
     };
   }
 
-  /** Searches this guest may still make today (null when search is off: no key). */
+  /** Official searches this guest may still make today (null without a key). */
   remainingFor(guestId: string | null): number | null {
     if (!this.hasKey()) return null;
     const limits = this.#settings.data().limits;
@@ -278,10 +322,40 @@ export class YouTubeService {
     return Math.min(global, mine);
   }
 
-  /** Submit-only search. Cache hits are free; misses spend one search from today's budget. */
+  /**
+   * `GuestState.search`: the official API while it can still serve this guest, else the
+   * results-page fallback when the owner allows it, else off.
+   */
+  searchState(guestId: string | null): GuestState['search'] {
+    const remaining = this.remainingFor(guestId);
+    if (remaining !== null && remaining > 0) {
+      return {
+        enabled: true,
+        remaining,
+        low: remaining <= SEARCH_LOW_WARNING,
+        provider: 'youtube-api',
+      };
+    }
+    if (this.#settings.unofficialFallback()) {
+      return { enabled: true, remaining: null, low: false, provider: 'unofficial' };
+    }
+    return {
+      enabled: false,
+      remaining,
+      low: remaining !== null,
+      ...(remaining !== null ? { provider: 'youtube-api' as const } : {}),
+    };
+  }
+
+  /**
+   * Submit-only search. Cache hits (either provider) are free. Misses use the Data API while the
+   * budget lasts; once it is exhausted (or with no key) they use the results-page fallback when
+   * `search.unofficialFallback` is on.
+   */
   async search(q: string, actor: SearchActor): Promise<SearchReply> {
     const key = this.#settings.apiKey();
-    if (key === null) {
+    const fallback = this.#settings.unofficialFallback();
+    if (key === null && !fallback) {
       throw new HttpError(
         503,
         'search-disabled',
@@ -290,74 +364,151 @@ export class YouTubeService {
     }
     const now = this.#now();
     const query = normaliseQuery(q);
-    const limits = this.#settings.data().limits;
     const cached = this.#repos.searchCache.get(query);
-    let ids: string[];
-    let fromCache = false;
-    const snippets = new Map<string, VideoRow>();
     if (cached !== null && now - cached.fetchedAt < CACHE_TTL_MS) {
-      ids = cached.videoIds;
-      fromCache = true;
-    } else {
-      const day = pacificDay(now);
-      const usage = this.#repos.searchUsage.get(day);
-      const check = checkSearchBudget(limits, usage, actor);
-      if (!check.ok) {
+      const snippets = new Map<string, VideoRow>();
+      for (const c of cached.cards ?? []) snippets.set(c.videoId, rowFromCard(c, cached.fetchedAt));
+      return this.#reply(cached.videoIds, snippets, cached.provider, true, actor);
+    }
+    if (key === null) return this.#searchUnofficial(q, query, actor);
+
+    const limits = this.#settings.data().limits;
+    const day = pacificDay(now);
+    const usage = this.#repos.searchUsage.get(day);
+    const check = checkSearchBudget(limits, usage, actor);
+    if (!check.ok) {
+      if (fallback && EXHAUSTED.has(check.reason)) return this.#searchUnofficial(q, query, actor);
+      throw new HttpError(
+        429,
+        check.reason === 'daily-quota' ? 'daily-quota' : 'search-budget',
+        check.message,
+        check.retryAfterSec,
+      );
+    }
+    // Count before the call so concurrent searches see it.
+    this.#repos.searchUsage.put(day, recordSearch(usage, actor), now);
+    let items;
+    try {
+      items = await this.#api.search(key, q.trim());
+    } catch (err) {
+      if (err instanceof YouTubeHttpError && err.quotaExceeded) {
+        const u = this.#repos.searchUsage.get(day);
+        this.#repos.searchUsage.put(
+          day,
+          { ...u, total: Math.max(u.total, limits.search.dailyTotal) },
+          now,
+        );
+        if (fallback) return this.#searchUnofficial(q, query, actor, true);
         throw new HttpError(
           429,
-          check.reason === 'daily-quota' ? 'daily-quota' : 'search-budget',
-          check.message,
-          check.retryAfterSec,
+          'daily-quota',
+          'Search is used up for today (YouTube’s daily limit). Use Find on YouTube instead, it always works.',
         );
       }
-      // Count before the call so concurrent searches see it.
-      this.#repos.searchUsage.put(day, recordSearch(usage, actor), now);
-      let items;
-      try {
-        items = await this.#api.search(key, q.trim());
-      } catch (err) {
-        if (err instanceof YouTubeHttpError && err.quotaExceeded) {
-          const u = this.#repos.searchUsage.get(day);
-          this.#repos.searchUsage.put(
-            day,
-            { ...u, total: Math.max(u.total, limits.search.dailyTotal) },
-            now,
-          );
-          throw new HttpError(
-            429,
-            'daily-quota',
-            'Search is used up for today (YouTube’s daily limit). Use Find on YouTube instead, it always works.',
-          );
-        }
-        throw new HttpError(
-          502,
-          'youtube-unavailable',
-          'YouTube search is not answering right now.',
-        );
-      }
-      ids = items.map((i) => i.videoId);
-      for (const i of items) {
-        snippets.set(i.videoId, {
-          videoId: i.videoId,
-          title: i.title,
-          channelTitle: i.channelTitle,
-          ...(i.thumbnail !== undefined ? { thumbnail: i.thumbnail } : {}),
-          missing: false,
-          refreshedAt: now,
-        });
-      }
-      this.#repos.searchCache.put(query, ids, now);
+      throw new HttpError(502, 'youtube-unavailable', UNAVAILABLE);
     }
-    const rows = await this.lookupVideos(ids);
-    const results: VideoCard[] = ids.map((id) => this.#card(id, rows.get(id) ?? snippets.get(id)));
-    const left = remainingSearches(this.usage(now), limits);
-    const remaining = actor.isOwner
-      ? left.owner
-      : Math.min(
-          left.guests,
-          Math.max(0, limits.search.perGuestPerDay - (this.usage(now).byGuest[actor.guestId] ?? 0)),
+    const ids = items.map((i) => i.videoId);
+    const snippets = new Map<string, VideoRow>();
+    for (const i of items) {
+      snippets.set(i.videoId, {
+        videoId: i.videoId,
+        title: i.title,
+        channelTitle: i.channelTitle,
+        ...(i.thumbnail !== undefined ? { thumbnail: i.thumbnail } : {}),
+        missing: false,
+        refreshedAt: now,
+      });
+    }
+    this.#repos.searchCache.put(query, ids, now, 'youtube-api');
+    return this.#reply(ids, snippets, 'youtube-api', false, actor);
+  }
+
+  /**
+   * A results-page search. Guests keep the per-guest/per-IP interval (shared with the API path;
+   * only the `lastAt` stamps are recorded, no budget is spent). `afterApiCall`: the same request
+   * already passed the interval check on the API path.
+   */
+  async #searchUnofficial(
+    q: string,
+    query: string,
+    actor: SearchActor,
+    afterApiCall = false,
+  ): Promise<SearchReply> {
+    const now = this.#now();
+    const day = pacificDay(now);
+    if (!actor.isOwner && !afterApiCall) {
+      const usage = this.#repos.searchUsage.get(day);
+      const interval = this.#settings.data().limits.search.perGuestIntervalSec;
+      const last = Math.max(
+        usage.lastAtByGuest[actor.guestId] ?? -Infinity,
+        usage.lastAtByIp[actor.ip] ?? -Infinity,
+      );
+      const waitMs = last + interval * 1000 - actor.now;
+      if (waitMs > 0) {
+        const retryAfterSec = Math.ceil(waitMs / 1000);
+        throw new HttpError(
+          429,
+          'search-budget',
+          `Please wait ${seconds(retryAfterSec)} before searching again; this room allows one search every ${seconds(interval)} (set by the owner).`,
+          retryAfterSec,
         );
-    return { results, remaining, cached: fromCache };
+      }
+      this.#repos.searchUsage.put(
+        day,
+        {
+          ...usage,
+          lastAtByGuest: { ...usage.lastAtByGuest, [actor.guestId]: actor.now },
+          lastAtByIp: { ...usage.lastAtByIp, [actor.ip]: actor.now },
+        },
+        now,
+      );
+    }
+    let cards: VideoCard[];
+    try {
+      cards = await this.#unofficial(q);
+    } catch (err) {
+      if (err instanceof UnofficialSearchError) {
+        throw new HttpError(502, 'youtube-unavailable', UNAVAILABLE);
+      }
+      throw err;
+    }
+    const ids = cards.map((c) => c.videoId);
+    const snippets = new Map(cards.map((c) => [c.videoId, rowFromCard(c, now)]));
+    this.#repos.searchCache.put(query, ids, now, 'unofficial', cards);
+    return this.#reply(ids, snippets, 'unofficial', false, actor);
+  }
+
+  /**
+   * Cards in result order. With a key, `videos.list` pre-screens every result (1 unit per 50
+   * IDs) and its rows win; otherwise the search snippet (API) or page snapshot (unofficial) is
+   * used. `remaining` is the official budget on the API path and null on the unofficial path.
+   */
+  async #reply(
+    ids: string[],
+    snippets: Map<string, VideoRow>,
+    provider: SearchProvider,
+    cached: boolean,
+    actor: SearchActor,
+  ): Promise<SearchReply> {
+    const rows = await this.lookupVideos(ids);
+    const results = ids.map((id) => {
+      const row = rows.get(id);
+      return this.#card(id, row !== undefined && isApiRow(row) ? row : (snippets.get(id) ?? row));
+    });
+    let remaining: number | null = null;
+    if (provider === 'youtube-api' && this.hasKey()) {
+      const now = this.#now();
+      const limits = this.#settings.data().limits;
+      const usage = this.usage(now);
+      const left = remainingSearches(usage, limits);
+      remaining = actor.isOwner
+        ? left.owner
+        : Math.min(
+            left.guests,
+            Math.max(0, limits.search.perGuestPerDay - (usage.byGuest[actor.guestId] ?? 0)),
+          );
+    }
+    return { results, remaining, cached, provider };
   }
 
   #card(videoId: string, row: VideoRow | undefined): VideoCard {

@@ -1,7 +1,21 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { DEFAULT_COUNTRY, DEFAULT_LIMITS, INITIAL_HUB_EPOCH } from '@room-jukebox/core';
 import type { PlaylistInfo, SettingsPatch, SettingsPublic } from '@room-jukebox/shared';
+import { z } from 'zod';
 import type { PlaylistRow, Repos, SettingsData, SettingsRow } from './db/repo.ts';
+
+/**
+ * Server-side settings not yet in the shared contract (`SettingsPatch`/`SettingsPublic`): parsed
+ * from the PATCH body beside `SettingsPatchSchema` (which strips them) and echoed as extra keys.
+ */
+export const SettingsPatchExtSchema = z.object({
+  search: z.object({ unofficialFallback: z.boolean().optional() }).optional(),
+});
+export type SettingsPatchExt = z.infer<typeof SettingsPatchExtSchema>;
+export type SettingsPublicExt = SettingsPublic & { search: { unofficialFallback: boolean } };
+
+/** The results-page search fallback is on unless the owner turns it off. */
+export const DEFAULT_UNOFFICIAL_FALLBACK = true;
 
 /** At-rest encryption for secrets (the desktop passes Electron safeStorage; standalone = identity). */
 export interface Secrets {
@@ -26,6 +40,7 @@ export function defaultSettingsData(): SettingsData {
     hubId: randomUUID(),
     hubEpoch: INITIAL_HUB_EPOCH,
     lanChosen: null,
+    search: { unofficialFallback: DEFAULT_UNOFFICIAL_FALLBACK },
   };
 }
 
@@ -78,6 +93,11 @@ export class SettingsService {
     }
   }
 
+  /** Whether search may fall back to YouTube's public results page. */
+  unofficialFallback(): boolean {
+    return this.data().search?.unofficialFallback ?? DEFAULT_UNOFFICIAL_FALLBACK;
+  }
+
   wifiPassword(): string | null {
     const enc = this.row().wifiPasswordEnc;
     if (enc === null) return null;
@@ -110,7 +130,7 @@ export class SettingsService {
     );
   }
 
-  toPublic(): SettingsPublic {
+  toPublic(): SettingsPublicExt {
     const row = this.row();
     const d = row.data;
     const usableKey = (this.apiKey() ?? '') !== '';
@@ -131,14 +151,16 @@ export class SettingsService {
       publicMode: d.publicMode,
       hubId: d.hubId,
       hubEpoch: d.hubEpoch,
+      search: { unofficialFallback: this.unofficialFallback() },
     };
   }
 
   /**
    * Applies a PATCH. Read-only fields (`hubId`, `hubEpoch`, `fallbackPlaylists`, the `has*` flags
-   * and `apiKeyLast4`) are ignored; secrets are encrypted and never echoed.
+   * and `apiKeyLast4`) are ignored; secrets are encrypted and never echoed. `ext` carries the
+   * server-side extras (`search.unofficialFallback`).
    */
-  patch(p: SettingsPatch): SettingsPublic {
+  patch(p: SettingsPatch, ext: SettingsPatchExt = {}): SettingsPublicExt {
     const d = { ...this.data() };
     if (p.roomName !== undefined) d.roomName = p.roomName;
     if (p.lanPort !== undefined) d.lanPort = p.lanPort;
@@ -150,6 +172,9 @@ export class SettingsService {
     if (p.autoFullscreen !== undefined) d.autoFullscreen = p.autoFullscreen;
     if (p.kiosk !== undefined) d.kiosk = p.kiosk;
     if (p.publicMode !== undefined) d.publicMode = p.publicMode;
+    if (ext.search?.unofficialFallback !== undefined) {
+      d.search = { ...d.search, unofficialFallback: ext.search.unofficialFallback };
+    }
     this.setData(d);
     if (p.youtubeApiKey !== undefined) this.setApiKey(p.youtubeApiKey);
     if (p.wifiPassword !== undefined) this.setWifiPassword(p.wifiPassword);

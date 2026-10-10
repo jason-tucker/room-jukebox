@@ -204,12 +204,19 @@ describe('YouTube routes', () => {
           dailyTotal: 2,
         },
       },
+      // the results-page fallback has its own tests (unofficial.test.ts)
+      search: { unofficialFallback: false },
     });
     const blocked = await g.req({ method: 'POST', url: '/api/search', payload: { q: 'other' } });
     expect(blocked.statusCode).toBe(429);
     expect(blocked.json().error.code).toBe('search-budget');
     const state = (await g.req({ method: 'GET', url: '/api/session' })).json() as GuestState;
-    expect(state.search).toEqual({ enabled: false, remaining: 0, low: true });
+    expect(state.search).toEqual({
+      enabled: false,
+      remaining: 0,
+      low: true,
+      provider: 'youtube-api',
+    });
     expect(state.playback.nowPlaying?.videoId).toBe(vid(1));
 
     // the owner reserve still works, then the daily quota
@@ -230,7 +237,8 @@ describe('YouTube routes', () => {
     expect((await g.request(vid(1))).statusCode).toBe(201);
   });
 
-  it("YouTube's quotaExceeded maps to daily-quota", async () => {
+  it("YouTube's quotaExceeded maps to daily-quota (fallback off)", async () => {
+    await admin('PATCH', '/api/admin/settings', { search: { unofficialFallback: false } });
     hub.yt.quotaExceeded = true;
     const g = new Guest(hub.app);
     const res = await g.req({ method: 'POST', url: '/api/search', payload: { q: 'x' } });
@@ -239,8 +247,11 @@ describe('YouTube routes', () => {
     expect((await admin('GET', '/api/admin/searches')).json().owner).toBe(0);
   });
 
-  it('search is 503 without a key', async () => {
-    await admin('PATCH', '/api/admin/settings', { youtubeApiKey: null });
+  it('search is 503 without a key (fallback off)', async () => {
+    await admin('PATCH', '/api/admin/settings', {
+      youtubeApiKey: null,
+      search: { unofficialFallback: false },
+    });
     const g = new Guest(hub.app);
     const res = await g.req({ method: 'POST', url: '/api/search', payload: { q: 'x' } });
     expect(res.statusCode).toBe(503);

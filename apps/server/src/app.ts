@@ -31,6 +31,7 @@ import type { SpikeSession } from './spike/session.ts';
 import type { FetchLike } from './youtube/client.ts';
 import { createYouTubeApi } from './youtube/client.ts';
 import { pacificDay, YouTubeService } from './youtube/service.ts';
+import { searchUnofficial } from './youtube/unofficial.ts';
 
 export const VERSION: string = pkg.version;
 
@@ -131,7 +132,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const repos = new Repos(db);
   const settings = new SettingsService(repos, options.secrets ?? identitySecrets, now);
   const lan = options.lan ?? osLan;
-  const api = createYouTubeApi(options.fetch ?? fetch, (call) => {
+  const fetchImpl = options.fetch ?? fetch;
+  const api = createYouTubeApi(fetchImpl, (call) => {
     try {
       const at = now();
       repos.quotaLog.append(at, pacificDay(at), call.endpoint, call.units, call.status);
@@ -139,7 +141,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
       app.log.warn({ err }, 'quota log write failed');
     }
   });
-  const youtube = new YouTubeService({ repos, settings, api, now });
+  const youtube = new YouTubeService({
+    repos,
+    settings,
+    api,
+    unofficial: (q) => searchUnofficial(q, { fetch: fetchImpl }),
+    now,
+  });
   const session = new Session({
     repos,
     settings,

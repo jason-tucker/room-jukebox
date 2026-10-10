@@ -20,7 +20,6 @@ import {
   remove,
   reorder,
   restoreAfterRestart,
-  SEARCH_LOW_WARNING,
   shouldStopRetrying,
   transition,
 } from '@room-jukebox/core';
@@ -772,17 +771,12 @@ export class Session {
   /** Guest projection: no guest IDs, keys, IPs or tokens; `mine` for `guestId`. */
   toGuestState(guestId: string | null): GuestState {
     const settings = this.#d.settings.data();
-    const remaining = this.#d.youtube.remainingFor(guestId);
     return {
       ...this.#base(),
       playback: this.#playback(guestId),
       queue: this.#state.queue.map((e) => toEntryPublic(e, guestId)),
       recentHistory: this.#recentHistory().map((e) => toEntryPublic(e, guestId)),
-      search: {
-        enabled: remaining !== null && remaining > 0,
-        remaining,
-        low: remaining !== null && remaining <= SEARCH_LOW_WARNING,
-      },
+      search: this.#d.youtube.searchState(guestId),
       limits: {
         maxPendingPerGuest: settings.limits.maxPendingPerGuest,
         cooldownSec: settings.limits.cooldownSec,

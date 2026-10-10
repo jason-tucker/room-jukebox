@@ -38,6 +38,8 @@ export class FakeYouTube {
   calls: { endpoint: string; params: URLSearchParams }[] = [];
   quotaExceeded = false;
   down = false;
+  /** HTML served for `www.youtube.com/results` (the unofficial search); null → 503. */
+  resultsHtml: string | null = null;
 
   add(...videos: FakeVideo[]): this {
     for (const v of videos) this.videos.set(v.id, v);
@@ -103,6 +105,13 @@ export class FakeYouTube {
           contentDetails: { videoId: i.id },
           status: { privacyStatus: i.privacy ?? 'public' },
         })),
+      });
+    }
+    if (endpoint === 'results') {
+      if (this.resultsHtml === null) return new Response('unavailable', { status: 503 });
+      return new Response(this.resultsHtml, {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
       });
     }
     if (endpoint === 'oembed') {

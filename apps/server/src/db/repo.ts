@@ -10,6 +10,7 @@ import type {
   SkipReason,
 } from '@room-jukebox/core';
 import { emptySearchUsage } from '@room-jukebox/core';
+import type { SearchProvider, VideoCard } from '@room-jukebox/shared';
 import type { SQLOutputValue } from 'node:sqlite';
 import type { Db } from './index.ts';
 import { transaction } from './index.ts';
@@ -50,6 +51,8 @@ export interface SettingsData {
   hubEpoch: number;
   /** Owner's QR address override (`PATCH /api/admin/lan`). */
   lanChosen: string | null;
+  /** Absent in rows written before the search fallback existed (read as the defaults). */
+  search?: { unofficialFallback: boolean };
 }
 
 export interface SettingsRow {
@@ -584,24 +587,50 @@ export class PlaylistsRepo {
 // ---------------------------------------------------------------------------------------------
 // Search cache and usage
 
+export interface SearchCacheRow {
+  videoIds: string[];
+  fetchedAt: number;
+  provider: SearchProvider;
+  /** Results-page snapshot (unofficial rows only). */
+  cards?: VideoCard[];
+}
+
 export class SearchCacheRepo {
   #db: Db;
   constructor(db: Db) {
     this.#db = db;
   }
 
-  get(query: string): { videoIds: string[]; fetchedAt: number } | null {
+  get(query: string): SearchCacheRow | null {
     const r = this.#db.prepare('SELECT * FROM search_cache WHERE query = ?').get(query);
     if (r === undefined) return null;
-    return { videoIds: JSON.parse(str(r.video_ids)) as string[], fetchedAt: num(r.fetched_at) };
+    const row: SearchCacheRow = {
+      videoIds: JSON.parse(str(r.video_ids)) as string[],
+      fetchedAt: num(r.fetched_at),
+      provider: r.provider === 'unofficial' ? 'unofficial' : 'youtube-api',
+    };
+    if (typeof r.cards === 'string') row.cards = JSON.parse(r.cards) as VideoCard[];
+    return row;
   }
 
-  put(query: string, videoIds: readonly string[], at: number): void {
+  put(
+    query: string,
+    videoIds: readonly string[],
+    at: number,
+    provider: SearchProvider = 'youtube-api',
+    cards?: readonly VideoCard[],
+  ): void {
     this.#db
       .prepare(
-        'INSERT OR REPLACE INTO search_cache (query, video_ids, fetched_at) VALUES (?, ?, ?)',
+        'INSERT OR REPLACE INTO search_cache (query, video_ids, fetched_at, provider, cards) VALUES (?, ?, ?, ?, ?)',
       )
-      .run(query, JSON.stringify(videoIds), at);
+      .run(
+        query,
+        JSON.stringify(videoIds),
+        at,
+        provider,
+        cards === undefined ? null : JSON.stringify(cards),
+      );
   }
 }
 
