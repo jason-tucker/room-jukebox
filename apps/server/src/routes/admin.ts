@@ -23,6 +23,7 @@ import { HttpError, parse } from '../errors.ts';
 import { lanReply, safeAddresses } from '../lan.ts';
 import { submitRequest } from '../requests.ts';
 import { OWNER_GUEST_ID, toEntryPublic } from '../session/projections.ts';
+import { SettingsPatchExtSchema } from '../settings.ts';
 
 const LanPatchSchema = z.object({ chosen: z.string().min(1).nullable() });
 const LogsQuerySchema = z.object({
@@ -171,8 +172,13 @@ export async function registerAdminRoutes(app: FastifyInstance, ctx: AppContext)
   app.patch('/api/admin/settings', async (request) => {
     requireAdmin(ctx, request);
     const patch = parse(SettingsPatchSchema, request.body);
-    const settings = ctx.settings.patch(patch);
-    ctx.repos.events.append('admin.settings', { fields: Object.keys(patch) }, ctx.now());
+    const ext = parse(SettingsPatchExtSchema, request.body);
+    const settings = ctx.settings.patch(patch, ext);
+    ctx.repos.events.append(
+      'admin.settings',
+      { fields: [...Object.keys(patch), ...Object.keys(ext)] },
+      ctx.now(),
+    );
     ctx.session.touch();
     await runHook(request, () => ctx.hooks.onSettingsChanged?.(settings));
     return settings;

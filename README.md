@@ -149,11 +149,21 @@ Windows, `DATA_DIR` or `./data` standalone), with nightly 04:00 backups in `back
 | _Too many wrong passwords_                         | 5 failed logins from one device; each further failure doubles the wait (max 15 min)                                   | Wait the time shown, then sign in; a correct password resets the counter                                                                                  |
 | Signed out on every device                         | The owner password was changed (every session is invalidated) or the 12 h session expired                             | Sign in again; the desktop's own token is renewed by the app                                                                                              |
 | `/setup` answers 409                               | A password already exists                                                                                             | Use `/admin`; to start over, quit the app and delete `data.db` (a backup is in `backups\`)                                                                |
-| Search box missing on phones                       | No API key, or today's search budget is used up (resets at midnight Pacific)                                          | Add the key in settings; guests can always use _Find on YouTube_ + _Paste link_                                                                           |
+| Search box missing on phones                       | No API key, or today's search budget is used up (resets at midnight Pacific), and the search fallback is off          | Add the key in settings; guests can always use _Find on YouTube_ + _Paste link_                                                                           |
 | "Several videos in a row failed" on the TV         | 5 consecutive fallback videos failed (removed, private, embedding off)                                                | Press _Start Music_ or play from admin; check _Last errors_ in admin and refresh or replace the fallback playlist                                         |
 | TV shows _Reconnecting_ after the app restarted    | The TV window reconnects within 10 s; otherwise the interrupted song is restarted once, then skipped on a 2nd restart | Wait a few seconds; if it stays, reload the TV window                                                                                                     |
 | QR code points at the wrong address                | The laptop has several adapters (VPN, Docker, VirtualBox)                                                             | Admin → LAN: choose the Wi-Fi address                                                                                                                     |
 | Restore a backup by hand (M1)                      | Settings or queue lost                                                                                                | Quit the app, copy a file from `backups\` over `data.db`, delete `data.db-wal` and `data.db-shm`, start the app (the API key needs the same Windows user) |
+
+**Search fallback (unofficial).** Search uses the official YouTube Data API first. Once today's
+search budget is used up (or when no API key is set), the hub instead reads YouTube's public
+results page (`youtube.com/results`) and shows those videos, labelled as coming from the fallback.
+This is not an official API: it is against YouTube's terms of service, and it can stop working
+without notice whenever YouTube changes that page; then search answers _YouTube search is not
+answering right now_ (502 `youtube-unavailable`) while paste-a-link keeps working. Fallback results
+are cached for 24 h like API results. To turn it off, set `search.unofficialFallback` to `false` in
+the settings (`PATCH /api/admin/settings` with `{"search": {"unofficialFallback": false}}`); search
+then stops at the daily budget as before.
 
 ### M0 spike pages (temporary)
 
