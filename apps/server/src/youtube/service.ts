@@ -1,0 +1,470 @@
+/**
+ * YouTube features on top of the API client: video lookup into the `videos` table, pre-screen,
+ * link resolve, submit-only search with the 24 h ID cache and the daily search budget, playlist
+ * import, and the quota log.
+ */
+import { randomUUID } from 'node:crypto';
+import {
+  checkSearchBudget,
+  evaluateVideo,
+  recordSearch,
+  remainingSearches,
+} from '@room-jukebox/core';
+import type { PrescreenResult, SearchActor, SearchUsage, VideoMeta } from '@room-jukebox/core';
+import type {
+  PlaylistInfo,
+  ResolveReply,
+  SearchReply,
+  SearchesReply,
+  VideoCard,
+} from '@room-jukebox/shared';
+import type { Repos, VideoRow } from '../db/repo.ts';
+import { HttpError } from '../errors.ts';
+import type { SettingsService } from '../settings.ts';
+import { toPlaylistInfo } from '../settings.ts';
+import type { VideoResource, YouTubeApi } from './client.ts';
+import { pickThumbnail, YouTubeHttpError } from './client.ts';
+import { extractPlaylistId, parseIsoDuration } from './ids.ts';
+
+/** M1 keeps search ID lists and video metadata for 24 h. */
+export const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_PLAYLIST_PAGES = 20;
+const PACIFIC = 'America/Los_Angeles';
+
+/** Lower-cased, whitespace-collapsed, trimmed. */
+export const normaliseQuery = (q: string): string => q.toLowerCase().replace(/\s+/g, ' ').trim();
+
+const dayFormat = new Intl.DateTimeFormat('en-CA', {
+  timeZone: PACIFIC,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+const timeFormat = new Intl.DateTimeFormat('en-GB', {
+  timeZone: PACIFIC,
+  hour: '2-digit',
+  minute: '2-digit',
+  hourCycle: 'h23',
+});
+
+/** YouTube's quota day (`YYYY-MM-DD` in Pacific time). */
+export const pacificDay = (now: number): string => dayFormat.format(new Date(now));
+
+/** ms of the next midnight Pacific (when YouTube's quota resets). */
+export function nextPacificMidnight(now: number): number {
+  const [y, m, d] = pacificDay(now).split('-').map(Number) as [number, number, number];
+  for (const offsetHours of [7, 8, 6, 9]) {
+    const t = Date.UTC(y, m - 1, d + 1, offsetHours);
+    if (timeFormat.format(new Date(t)) === '00:00') return t;
+  }
+  return Date.UTC(y, m - 1, d + 1, 8);
+}
+
+export function metaOf(row: VideoRow | null): VideoMeta | null {
+  if (row === null || row.missing) return null;
+  const meta: VideoMeta = {};
+  if (row.embeddable !== undefined) meta.embeddable = row.embeddable;
+  if (row.privacyStatus !== undefined) meta.privacyStatus = row.privacyStatus;
+  if (row.ytRating !== undefined) meta.ytRating = row.ytRating;
+  if (row.liveBroadcastContent !== undefined) meta.liveBroadcastContent = row.liveBroadcastContent;
+  if (row.regionRestriction !== undefined) meta.regionRestriction = row.regionRestriction;
+  if (row.durationSec !== undefined) meta.durationSec = row.durationSec;
+  if (row.madeForKids !== undefined) meta.madeForKids = row.madeForKids;
+  return meta;
+}
+
+/** Rows written from `videos.list` (not only an oEmbed title). */
+const isApiRow = (row: VideoRow): boolean => row.missing || row.embeddable !== undefined;
+
+export function videoRowFromResource(r: VideoResource, now: number): VideoRow {
+  const row: VideoRow = {
+    videoId: r.id,
+    title: r.snippet?.title ?? r.id,
+    missing: false,
+    refreshedAt: now,
+    durationSec: parseIsoDuration(r.contentDetails?.duration),
+  };
+  if (r.snippet?.channelTitle !== undefined) row.channelTitle = r.snippet.channelTitle;
+  const thumb = pickThumbnail(r.snippet?.thumbnails, r.id);
+  if (thumb !== undefined) row.thumbnail = thumb;
+  if (r.status?.embeddable !== undefined) row.embeddable = r.status.embeddable;
+  else row.embeddable = true;
+  if (r.status?.privacyStatus !== undefined) row.privacyStatus = r.status.privacyStatus;
+  if (r.status?.madeForKids !== undefined) row.madeForKids = r.status.madeForKids;
+  const rating = r.contentDetails?.contentRating?.ytRating;
+  if (rating !== undefined) row.ytRating = rating;
+  if (r.snippet?.liveBroadcastContent !== undefined)
+    row.liveBroadcastContent = r.snippet.liveBroadcastContent;
+  const region = r.contentDetails?.regionRestriction;
+  if (region !== undefined) {
+    row.regionRestriction = {
+      ...(region.allowed ? { allowed: region.allowed } : {}),
+      ...(region.blocked ? { blocked: region.blocked } : {}),
+    };
+  }
+  return row;
+}
+
+export interface YouTubeServiceOptions {
+  repos: Repos;
+  settings: SettingsService;
+  api: YouTubeApi;
+  now: () => number;
+}
+
+export class YouTubeService {
+  #repos: Repos;
+  #settings: SettingsService;
+  #api: YouTubeApi;
+  #now: () => number;
+
+  constructor(options: YouTubeServiceOptions) {
+    this.#repos = options.repos;
+    this.#settings = options.settings;
+    this.#api = options.api;
+    this.#now = options.now;
+  }
+
+  hasKey(): boolean {
+    return this.#settings.apiKey() !== null;
+  }
+
+  prescreen(row: VideoRow | null): PrescreenResult {
+    const d = this.#settings.data();
+    return evaluateVideo(metaOf(row), {
+      maxDurationSec: d.limits.maxDurationSec,
+      country: d.country,
+    });
+  }
+
+  /**
+   * Metadata for `ids` from the `videos` table, refreshing rows older than 24 h (or written from
+   * oEmbed only) through `videos.list` in batches of 50 when a key exists. IDs absent from the
+   * response are stored as `missing`. Returns what is known (stale rows when YouTube fails).
+   */
+  async lookupVideos(ids: readonly string[]): Promise<Map<string, VideoRow>> {
+    const now = this.#now();
+    const known = this.#repos.videos.getMany(ids);
+    const key = this.#settings.apiKey();
+    if (key === null) return known;
+    const stale = [...new Set(ids)].filter((id) => {
+      const row = known.get(id);
+      return row === undefined || !isApiRow(row) || now - row.refreshedAt >= CACHE_TTL_MS;
+    });
+    for (let i = 0; i < stale.length; i += 50) {
+      const batch = stale.slice(i, i + 50);
+      let resources: VideoResource[];
+      try {
+        resources = await this.#api.videos(key, batch);
+      } catch {
+        break;
+      }
+      const found = new Set<string>();
+      for (const r of resources) {
+        const row = videoRowFromResource(r, now);
+        this.#repos.videos.upsert(row);
+        known.set(row.videoId, row);
+        found.add(row.videoId);
+      }
+      for (const id of batch) {
+        if (found.has(id)) continue;
+        const row: VideoRow = {
+          videoId: id,
+          title: known.get(id)?.title ?? id,
+          missing: true,
+          refreshedAt: now,
+        };
+        this.#repos.videos.upsert(row);
+        known.set(id, row);
+      }
+    }
+    return known;
+  }
+
+  /**
+   * Link resolve and the request pre-screen: `videos.list` when a key exists, else keyless oEmbed
+   * (404 → not found, 401/403 → not embeddable; unreachable → assumed playable).
+   */
+  async resolve(videoId: string): Promise<ResolveReply> {
+    if (this.hasKey()) {
+      const row = (await this.lookupVideos([videoId])).get(videoId) ?? null;
+      if (row !== null && isApiRow(row)) return this.#replyFromRow(videoId, row);
+    }
+    const cached = this.#repos.videos.get(videoId);
+    const o = await this.#api.oembed(`https://www.youtube.com/watch?v=${videoId}`);
+    if (o.ok) {
+      const row: VideoRow = {
+        ...(cached ?? { missing: false }),
+        videoId,
+        title: o.data.title,
+        refreshedAt: cached?.refreshedAt ?? this.#now(),
+        missing: false,
+      };
+      if (o.data.author_name !== undefined) row.channelTitle = o.data.author_name;
+      if (o.data.thumbnail_url !== undefined) row.thumbnail = o.data.thumbnail_url;
+      if (cached === null) this.#repos.videos.upsert(row);
+      return this.#replyFromRow(videoId, row);
+    }
+    if (o.status === 404 || o.status === 400) {
+      return this.#replyFromRow(videoId, {
+        videoId,
+        title: videoId,
+        missing: true,
+        refreshedAt: 0,
+      });
+    }
+    if (o.status === 401 || o.status === 403) {
+      return this.#replyFromRow(videoId, {
+        videoId,
+        title: cached?.title ?? videoId,
+        embeddable: false,
+        missing: false,
+        refreshedAt: 0,
+      });
+    }
+    // YouTube unreachable: allow; play-time errors catch anything wrong.
+    return this.#replyFromRow(
+      videoId,
+      cached ?? { videoId, title: 'YouTube video', missing: false, refreshedAt: 0 },
+    );
+  }
+
+  #replyFromRow(videoId: string, row: VideoRow): ResolveReply {
+    const screen = this.prescreen(row.missing ? null : row);
+    const reply: ResolveReply = {
+      videoId,
+      title: row.title,
+      durationSec: row.durationSec ?? null,
+      playable: screen.playable,
+    };
+    if (row.thumbnail !== undefined) reply.thumbnail = row.thumbnail;
+    else reply.thumbnail = `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
+    if (row.channelTitle !== undefined) reply.channelTitle = row.channelTitle;
+    if (!screen.playable) {
+      reply.reason = screen.reason;
+      reply.source = screen.source;
+      reply.message = screen.message;
+    }
+    return reply;
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Search
+
+  usage(now: number = this.#now()): SearchUsage {
+    return this.#repos.searchUsage.get(pacificDay(now));
+  }
+
+  searchesReply(): SearchesReply {
+    const now = this.#now();
+    const limits = this.#settings.data().limits;
+    const left = remainingSearches(this.usage(now), limits);
+    return {
+      guests: left.guests,
+      owner: left.owner,
+      resetsAt: nextPacificMidnight(now),
+      dailyTotal: limits.search.dailyTotal,
+    };
+  }
+
+  /** Searches this guest may still make today (null when search is off: no key). */
+  remainingFor(guestId: string | null): number | null {
+    if (!this.hasKey()) return null;
+    const limits = this.#settings.data().limits;
+    const usage = this.usage();
+    const global = remainingSearches(usage, limits).guests;
+    if (guestId === null) return global;
+    const mine = Math.max(0, limits.search.perGuestPerDay - (usage.byGuest[guestId] ?? 0));
+    return Math.min(global, mine);
+  }
+
+  /** Submit-only search. Cache hits are free; misses spend one search from today's budget. */
+  async search(q: string, actor: SearchActor): Promise<SearchReply> {
+    const key = this.#settings.apiKey();
+    if (key === null) {
+      throw new HttpError(
+        503,
+        'search-disabled',
+        'Search is off in this room. Use Find on YouTube and paste the link instead.',
+      );
+    }
+    const now = this.#now();
+    const query = normaliseQuery(q);
+    const limits = this.#settings.data().limits;
+    const cached = this.#repos.searchCache.get(query);
+    let ids: string[];
+    let fromCache = false;
+    const snippets = new Map<string, VideoRow>();
+    if (cached !== null && now - cached.fetchedAt < CACHE_TTL_MS) {
+      ids = cached.videoIds;
+      fromCache = true;
+    } else {
+      const day = pacificDay(now);
+      const usage = this.#repos.searchUsage.get(day);
+      const check = checkSearchBudget(limits, usage, actor);
+      if (!check.ok) {
+        throw new HttpError(
+          429,
+          check.reason === 'daily-quota' ? 'daily-quota' : 'search-budget',
+          check.message,
+          check.retryAfterSec,
+        );
+      }
+      // Count before the call so concurrent searches see it.
+      this.#repos.searchUsage.put(day, recordSearch(usage, actor), now);
+      let items;
+      try {
+        items = await this.#api.search(key, q.trim());
+      } catch (err) {
+        if (err instanceof YouTubeHttpError && err.quotaExceeded) {
+          const u = this.#repos.searchUsage.get(day);
+          this.#repos.searchUsage.put(
+            day,
+            { ...u, total: Math.max(u.total, limits.search.dailyTotal) },
+            now,
+          );
+          throw new HttpError(
+            429,
+            'daily-quota',
+            'Search is used up for today (YouTube’s daily limit). Use Find on YouTube instead, it always works.',
+          );
+        }
+        throw new HttpError(
+          502,
+          'youtube-unavailable',
+          'YouTube search is not answering right now.',
+        );
+      }
+      ids = items.map((i) => i.videoId);
+      for (const i of items) {
+        snippets.set(i.videoId, {
+          videoId: i.videoId,
+          title: i.title,
+          channelTitle: i.channelTitle,
+          ...(i.thumbnail !== undefined ? { thumbnail: i.thumbnail } : {}),
+          missing: false,
+          refreshedAt: now,
+        });
+      }
+      this.#repos.searchCache.put(query, ids, now);
+    }
+    const rows = await this.lookupVideos(ids);
+    const results: VideoCard[] = ids.map((id) => this.#card(id, rows.get(id) ?? snippets.get(id)));
+    const left = remainingSearches(this.usage(now), limits);
+    const remaining = actor.isOwner
+      ? left.owner
+      : Math.min(
+          left.guests,
+          Math.max(0, limits.search.perGuestPerDay - (this.usage(now).byGuest[actor.guestId] ?? 0)),
+        );
+    return { results, remaining, cached: fromCache };
+  }
+
+  #card(videoId: string, row: VideoRow | undefined): VideoCard {
+    const r = row ?? { videoId, title: videoId, missing: false, refreshedAt: 0 };
+    const screen = this.prescreen(r.missing ? null : r);
+    const card: VideoCard = {
+      videoId,
+      title: r.title,
+      channelTitle: r.channelTitle ?? '',
+      thumbnail: r.thumbnail ?? `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
+      durationSec: r.durationSec ?? null,
+      playable: screen.playable,
+    };
+    if (!screen.playable) {
+      card.reason = screen.reason;
+      card.source = screen.source;
+      card.message = screen.message;
+    }
+    return card;
+  }
+
+  // -------------------------------------------------------------------------------------------
+  // Fallback playlists
+
+  /**
+   * Imports (or refreshes, with `rowId`) a public or unlisted playlist. The first
+   * `playlistItems.list` call validates it: 404 → `playlist-not-found`, 403 → `playlist-private`.
+   */
+  async importPlaylist(url: string, rowId?: string): Promise<PlaylistInfo> {
+    const key = this.#settings.apiKey();
+    if (key === null) {
+      throw new HttpError(
+        422,
+        'no-api-key',
+        'Add a YouTube API key in settings before importing playlists.',
+      );
+    }
+    const playlistId = extractPlaylistId(url);
+    if (playlistId === null) {
+      throw new HttpError(
+        422,
+        'playlist-not-found',
+        "That doesn't look like a YouTube playlist link.",
+      );
+    }
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    for (let page = 0; page < MAX_PLAYLIST_PAGES; page++) {
+      let result;
+      try {
+        result = await this.#api.playlistItems(key, playlistId, pageToken);
+      } catch (err) {
+        if (page === 0 && err instanceof YouTubeHttpError) {
+          if (err.status === 404) {
+            throw new HttpError(422, 'playlist-not-found', "YouTube can't find that playlist.");
+          }
+          if (err.status === 403 && !err.quotaExceeded) {
+            throw new HttpError(
+              422,
+              'playlist-private',
+              'That playlist is private on YouTube. Make it public or unlisted, then try again.',
+            );
+          }
+        }
+        if (page === 0) {
+          throw new HttpError(502, 'youtube-unavailable', 'YouTube is not answering right now.');
+        }
+        break;
+      }
+      for (const item of result.items) {
+        const p = item.privacyStatus;
+        if (p !== undefined && p !== 'public' && p !== 'unlisted') continue;
+        if (!ids.includes(item.videoId)) ids.push(item.videoId);
+      }
+      pageToken = result.nextPageToken;
+      if (!pageToken) break;
+    }
+    await this.lookupVideos(ids);
+    const canonical = `https://www.youtube.com/playlist?list=${playlistId}`;
+    const o = await this.#api.oembed(canonical);
+    const existing = rowId !== undefined ? this.#repos.playlists.get(rowId) : null;
+    const row = {
+      id: existing?.id ?? rowId ?? `pl-${randomUUID()}`,
+      playlistId,
+      title: o.ok ? o.data.title : (existing?.title ?? playlistId),
+      url: existing?.url ?? url.trim(),
+      videoCount: ids.length,
+      importedAt: this.#now(),
+      lastError: null,
+    };
+    this.#repos.playlists.upsert(row);
+    this.#repos.playlists.setVideos(row.id, ids);
+    return toPlaylistInfo(row);
+  }
+
+  /** Records a failed import attempt (setup imports keep going on errors). */
+  recordPlaylistError(url: string, message: string): PlaylistInfo {
+    const row = {
+      id: `pl-${randomUUID()}`,
+      playlistId: extractPlaylistId(url) ?? 'unknown',
+      title: extractPlaylistId(url) ?? url,
+      url: url.trim(),
+      videoCount: 0,
+      importedAt: this.#now(),
+      lastError: message,
+    };
+    this.#repos.playlists.upsert(row);
+    return toPlaylistInfo(row);
+  }
+}
