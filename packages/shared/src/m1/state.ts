@@ -1,0 +1,130 @@
+import { z } from 'zod';
+import { EpochMsSchema, IdSchema } from './common.ts';
+import { EntryAdminSchema, EntryPublicSchema, PlaybackSchema } from './entries.ts';
+import { LimitsSchema } from './limits.ts';
+
+export const PlayerInfoSchema = z.object({
+  id: IdSchema,
+  name: z.string(),
+  lanAddress: z.string().nullable(),
+  status: z.enum(['online', 'delayed', 'reconnecting', 'blocked', 'offline']),
+  role: z.enum(['leader', 'follower']),
+  lastSeen: EpochMsSchema,
+  drift: z.number().nullable(),
+});
+export type PlayerInfo = z.infer<typeof PlayerInfoSchema>;
+
+export const PlaylistInfoSchema = z.object({
+  id: IdSchema,
+  playlistId: IdSchema,
+  title: z.string(),
+  url: z.string(),
+  videoCount: z.number().int().nonnegative(),
+  importedAt: EpochMsSchema,
+  lastError: z.string().optional(),
+});
+export type PlaylistInfo = z.infer<typeof PlaylistInfoSchema>;
+
+export const WifiSettingsSchema = z.object({
+  ssid: z.string(),
+  security: z.enum(['WPA', 'WEP', 'nopass']),
+  hidden: z.boolean(),
+});
+
+export const SettingsPublicSchema = z.object({
+  roomName: z.string(),
+  lanPort: z.number().int().nonnegative(),
+  country: z.string(),
+  limits: LimitsSchema,
+  fallbackPlaylists: z.array(PlaylistInfoSchema),
+  wifi: WifiSettingsSchema.nullable(),
+  hasWifiPassword: z.boolean(),
+  hasApiKey: z.boolean(),
+  apiKeyLast4: z.string().nullable(),
+  tvDisplayId: z.number().int().nullable(),
+  autoStart: z.boolean(),
+  autoFullscreen: z.boolean(),
+  kiosk: z.boolean(),
+  publicMode: z.boolean(),
+  hubId: IdSchema,
+  hubEpoch: z.number().int().nonnegative(),
+});
+export type SettingsPublic = z.infer<typeof SettingsPublicSchema>;
+
+export const SettingsPatchSchema = SettingsPublicSchema.partial().extend({
+  youtubeApiKey: z.string().nullable().optional(),
+  wifiPassword: z.string().nullable().optional(),
+});
+export type SettingsPatch = z.infer<typeof SettingsPatchSchema>;
+
+const baseState = {
+  revision: z.number().int().nonnegative(),
+  changeSeq: z.number().int().nonnegative(),
+  serverTime: EpochMsSchema,
+  protocolVersion: z.number().int(),
+  roomName: z.string(),
+  playback: PlaybackSchema,
+};
+
+export const GuestStateSchema = z.object({
+  ...baseState,
+  queue: z.array(EntryPublicSchema),
+  recentHistory: z.array(EntryPublicSchema),
+  search: z.object({
+    enabled: z.boolean(),
+    remaining: z.number().int().nonnegative().nullable(),
+    low: z.boolean(),
+  }),
+  limits: z.object({
+    maxPendingPerGuest: LimitsSchema.shape.maxPendingPerGuest,
+    cooldownSec: LimitsSchema.shape.cooldownSec,
+    maxDurationSec: LimitsSchema.shape.maxDurationSec,
+    allowDuplicates: LimitsSchema.shape.allowDuplicates,
+  }),
+  flags: z.object({ hasApiKey: z.boolean(), publicMode: z.boolean() }),
+});
+export type GuestState = z.infer<typeof GuestStateSchema>;
+
+export const AdminStateSchema = GuestStateSchema.extend({
+  queue: z.array(EntryAdminSchema),
+  recentHistory: z.array(EntryAdminSchema),
+  players: z.array(PlayerInfoSchema),
+  fallback: z.object({
+    playlists: z.array(PlaylistInfoSchema),
+    poolSize: z.number().int().nonnegative(),
+    consecutiveFailures: z.number().int().nonnegative(),
+  }),
+  searchUsage: z.object({
+    guests: z.number().int().nonnegative(),
+    owner: z.number().int().nonnegative(),
+    resetsAt: EpochMsSchema,
+  }),
+  settings: SettingsPublicSchema,
+  lastErrors: z.array(
+    z.object({
+      at: EpochMsSchema,
+      videoId: z.string(),
+      code: z.string().optional(),
+      message: z.string(),
+    }),
+  ),
+});
+export type AdminState = z.infer<typeof AdminStateSchema>;
+
+export const PlayerStateSchema = z.object({
+  ...baseState,
+  upcoming: z.array(z.object({ title: z.string(), requesterName: z.string().nullable() })).max(5),
+  qr: z.object({
+    lanUrl: z.string(),
+    publicUrl: z.string().nullable(),
+    wifi: z.string().nullable(),
+  }),
+  partyCode: z.string().nullable(),
+  me: z.object({ playerId: IdSchema, role: z.enum(['leader', 'follower']) }),
+  status: PlayerInfoSchema.shape.status,
+  lastError: z
+    .object({ code: z.string().optional(), message: z.string(), at: EpochMsSchema })
+    .nullable(),
+  selfTest: z.object({ autoplayBlocked: z.boolean() }),
+});
+export type PlayerState = z.infer<typeof PlayerStateSchema>;
