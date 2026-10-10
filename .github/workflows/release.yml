@@ -58,9 +58,9 @@ jobs:
             fs.writeFileSync(file + ".sig", signature.toString("base64") + "\n");
             console.log("wrote " + file + ".sig");
           '
-          # TODO(M0 updater): the app-side check lives in apps/desktop (electron-updater hook that
-          # downloads latest.yml.sig and verifies it with the compiled-in Ed25519 public key before
-          # any download). Not wired yet; until then the signature is published but not enforced.
+          # Enforced by the app: apps/desktop/src/updater.ts fetches latest.yml.sig from the same
+          # release and verifies it against apps/desktop/build/release-public.pem (compiled into
+          # main.cjs) before any download; a release without a valid .sig is never installed.
 
       - name: Upload latest.yml and latest.yml.sig to the draft release
         shell: bash

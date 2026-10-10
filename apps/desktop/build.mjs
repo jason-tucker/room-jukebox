@@ -10,6 +10,8 @@ const common = {
   sourcemap: true,
   logLevel: 'info',
   external: ['electron'],
+  // The Ed25519 release public key is compiled into main.cjs.
+  loader: { '.pem': 'text' },
 };
 
 await build({
@@ -27,7 +29,7 @@ await build({
 
 await build({
   ...common,
-  entryPoints: { preload: 'src/preload.ts' },
+  entryPoints: { preload: 'src/preload.ts', 'prompt-preload': 'src/prompt-preload.ts' },
   outExtension: { '.js': '.cjs' },
   outdir: 'dist',
 });

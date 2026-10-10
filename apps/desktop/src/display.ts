@@ -24,3 +24,16 @@ export function pickTvDisplay<T extends DisplayLike>(
     displays[0]
   );
 }
+
+/**
+ * Whether the TV is plugged in: the configured display when one is set, otherwise any external
+ * display (or more than one display, when Windows does not report `internal`).
+ */
+export function tvConnected(
+  displays: readonly DisplayLike[],
+  tvDisplayId: number | null | undefined,
+): boolean {
+  if (tvDisplayId !== null && tvDisplayId !== undefined)
+    return displays.some((d) => d.id === tvDisplayId);
+  return displays.length > 1 || displays.some((d) => d.internal === false);
+}

@@ -15,7 +15,11 @@ extraResources:
   # Elevated "Fix firewall" script (README); the wizard will call it later.
   - from: build/fix-firewall.ps1
     to: fix-firewall.ps1
+  # Tray icon (the window and installer icons come from build/icon.ico).
+  - from: build/icon.png
+    to: icon.png
 win:
+  icon: build/icon.ico
   target:
     - target: nsis
       arch:
