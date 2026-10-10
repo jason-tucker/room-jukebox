@@ -19,8 +19,6 @@ This repository is a pnpm monorepo:
 
 ## Owner setup (Windows)
 
-_M0 throwaway build; the full owner guide is written in M1._
-
 1. Download `RoomJukebox-Setup-<version>.exe` (from GitHub Releases, or during M0 from the
    `Public\RoomJukebox` share on Tango) and run it. The app is unsigned: on the SmartScreen prompt
    choose **More info**, then **Run anyway**. If Smart App Control is On, Windows refuses to run it
@@ -34,9 +32,29 @@ _M0 throwaway build; the full owner guide is written in M1._
    Silent auto-updates never ask again. Uninstalling asks for UAC a second time to remove the rules.
    If you decline the prompt the install still finishes and tells you to use _Fix firewall_ below.
 
-3. Plug the laptop into the TV. The player window opens full screen on the first display that is not
-   the Windows primary display (the TV, when the laptop screen is primary) and follows the TV when
-   it is unplugged or reconnected.
+3. Plug the laptop into the TV. The TV window opens on the display chosen in settings (default: the
+   first display that is not the Windows primary display, i.e. the TV when the laptop screen is
+   primary) and follows the TV when it is unplugged or reconnected. With _Auto fullscreen_ on it is
+   full screen; with _Kiosk_ on it is also always on top and Esc, F11 and Alt+F4 do nothing. If
+   anything else takes it out of full screen, it goes back after 5 seconds.
+4. Everything is controlled from the **tray icon** (the music note next to the clock; it may be
+   under the ^ arrow). _Show TV_ brings the TV window back to full screen. _Leave fullscreen_,
+   _Settings_, _Check for updates_ and _Quit_ ask for the owner password first; after a correct
+   password the app does not ask again for 10 minutes of activity. Closing the TV window does
+   nothing; quit from the tray. _Settings_ opens the admin page in its own window, which closes
+   itself after 10 minutes without use.
+5. **Auto-start:** turn on _Start with Windows_ in settings. **Updates** come from GitHub Releases:
+   the app checks at start and every 6 hours, refuses any update whose `latest.yml` is not signed by
+   the release job, downloads when the room is quiet (no guest request for 2 hours while a fallback
+   track plays) and installs when quiet between 05:00 and 12:00, at any hour while the TV is
+   unplugged, or at once with _Update now_. An update already downloaded installs at the next start.
+   To turn automatic updates off, set `"autoUpdate": false` in
+   `%APPDATA%\RoomJukebox\desktop-state.json` (manual _Check for updates_ still works).
+6. **Port in use:** the hub listens on port 8080. If another program holds it, the app retries for
+   30 seconds and then shows an error page; change the port in settings (applies after a restart),
+   or quit from the tray, set `"lanPort": 8081` in `desktop-state.json` and start the app again.
+   If the app fails to start three times within five minutes it stops restarting itself and shows
+   the log folder.
 
 ### Fix firewall
 
@@ -60,7 +78,7 @@ Add them to the shortcut's _Target_ after the closing quote of the exe path:
 | `--mode=hub` (default)      | Runs the embedded server on `LAN_PORT` (env, default 8080) and broadcasts the UDP beacon    |
 | `--mode=player --hub=<url>` | Player only, e.g. `--hub=http://192.168.1.20:8080`; serves the page from `127.0.0.1`        |
 | `--display=<id>`            | Forces the TV display (ids are listed in `selfcheck.json` and the log)                      |
-| `--kiosk`                   | Kiosk + always on top; Esc, F11 and Alt+F4 are ignored, **Ctrl+Shift+Q** quits (M0 only)    |
+| `--kiosk`                   | Forces kiosk + always on top (overrides the setting); Esc, F11 and Alt+F4 are ignored       |
 | `--windowed`                | A 1280x720 window instead of full screen (testing without a TV)                             |
 | `--occlusion-fix`           | Disables `CalculateNativeWinOcclusion` (gate 8: playback stalls when the window is covered) |
 
@@ -70,8 +88,15 @@ and the Windows network category, written at every start).
 
 ## First run
 
-_To be written during M0/M1._ The setup wizard (`/setup`) walks through naming the room, the owner
-password, the YouTube API key and the TV display.
+On the first start the TV window opens as a normal window showing the setup wizard (`/setup`,
+reachable only from the laptop itself). It walks through the room name, the owner password (at
+least 8 characters), the optional YouTube API key, fallback playlists and the Wi-Fi details for the
+QR code. When you finish, the window switches to the TV page on its own and goes full screen.
+
+The app stores its device tokens in `%APPDATA%\RoomJukebox\desktop-state.json`, encrypted with
+Windows DPAPI (`safeStorage`) for your Windows account; the hub data (settings, queue, history) lives
+in `%APPDATA%\RoomJukebox\data`. If DPAPI is unavailable the log says so loudly and the secrets are
+stored unencrypted. Before setup there is no password, so the tray actions work without one.
 
 ## Phones
 

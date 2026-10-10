@@ -46,3 +46,22 @@ export function beaconInterfaces(
   }
   return out;
 }
+
+/** One LAN address as the server's `lan.addresses()` hook reports it (contract: `GET /api/admin/lan`). */
+export interface LanAddress {
+  interface: string;
+  address: string;
+  cidr: string;
+}
+
+/** Non-internal IPv4 addresses for the QR/LAN URL choice, in `os.networkInterfaces()` order. */
+export function lanAddresses(interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>): LanAddress[] {
+  const out: LanAddress[] = [];
+  for (const [name, infos] of Object.entries(interfaces)) {
+    for (const info of infos ?? []) {
+      if (info.family !== 'IPv4' || info.internal) continue;
+      out.push({ interface: name, address: info.address, cidr: info.cidr ?? `${info.address}/32` });
+    }
+  }
+  return out;
+}
