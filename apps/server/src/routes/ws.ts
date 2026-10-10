@@ -42,6 +42,22 @@ export class WsHub {
 
   start(): void {
     this.#ctx.session.onChange(() => this.broadcastState());
+    this.#ctx.session.onPlayFailure((f) => {
+      const guestId = f.entry?.requester?.guestId;
+      if (f.entry && guestId) {
+        this.toastGuest(
+          guestId,
+          'warn',
+          `Couldn't play ${f.entry.title}: ${f.reason}. It was skipped.`,
+        );
+      }
+      if (f.stopped) {
+        this.toastAdmins(
+          'error',
+          `Playback stopped after repeated failures (${f.reason}). Press Start Music to resume.`,
+        );
+      }
+    });
     const hb = setInterval(() => this.heartbeat(), HEARTBEAT_INTERVAL_MS);
     const sweep = setInterval(() => this.#ctx.session.sweep(), SWEEP_INTERVAL_MS);
     hb.unref();
@@ -110,6 +126,14 @@ export class WsHub {
   toastGuest(guestId: string, level: 'info' | 'warn' | 'error', message: string): void {
     for (const c of this.#conns) {
       if (c.role === 'guest' && c.guestId === guestId) {
+        this.send(c, { type: 'toast', level, message, ttlMs: level === 'info' ? 4000 : 8000 });
+      }
+    }
+  }
+
+  toastAdmins(level: 'info' | 'warn' | 'error', message: string): void {
+    for (const c of this.#conns) {
+      if (c.role === 'admin') {
         this.send(c, { type: 'toast', level, message, ttlMs: level === 'info' ? 4000 : 8000 });
       }
     }

@@ -116,7 +116,15 @@ export interface SessionDeps {
   onError?: (err: unknown) => void;
 }
 
+/** A track failed at play time (`stopped`: the fallback gave up after repeated failures). */
+export interface PlayFailure {
+  entry: Entry | null;
+  reason: string;
+  stopped: boolean;
+}
+
 export class Session {
+  #failListeners = new Set<(f: PlayFailure) => void>();
   #d: SessionDeps;
   #state: QueueState;
   #ips: Map<string, string>;
@@ -169,6 +177,11 @@ export class Session {
 
   get meta(): Readonly<SessionData> {
     return this.#meta;
+  }
+
+  onPlayFailure(listener: (f: PlayFailure) => void): () => void {
+    this.#failListeners.add(listener);
+    return () => this.#failListeners.delete(listener);
   }
 
   onChange(listener: () => void): () => void {
@@ -645,8 +658,23 @@ export class Session {
       } else {
         this.#meta.consecutiveFailures = 0;
       }
+      const wasStopped = this.#meta.stopped;
       this.#apply(r);
       this.#commit();
+      if (kind === 'error') {
+        const failure: PlayFailure = {
+          entry: np,
+          reason: message,
+          stopped: !wasStopped && this.#meta.stopped,
+        };
+        for (const l of this.#failListeners) {
+          try {
+            l(failure);
+          } catch (err) {
+            this.#d.onError?.(err);
+          }
+        }
+      }
       return { committed: true };
     }
     if (kind === 'autoplayBlocked') {

@@ -136,6 +136,31 @@ describe('player transitions', () => {
     p.ws.terminate();
   });
 
+  it('a play-time error toasts the requester only', async () => {
+    const a = new Guest(hub.app, '192.168.1.51');
+    const b = new Guest(hub.app, '192.168.1.52');
+    await a.hello('Ann');
+    await b.hello('Bob');
+    const wa = await connectWs(hub.app, '/ws?role=guest', {
+      ip: a.ip,
+      headers: { cookie: a.cookie },
+    });
+    const wb = await connectWs(hub.app, '/ws?role=guest', {
+      ip: b.ip,
+      headers: { cookie: b.cookie },
+    });
+    const p = await player();
+    expect((await a.request(vid(1), 'ka')).statusCode).toBe(201);
+    const rev = hub.app.jukebox.session.revision;
+    p.send({ type: 'event', kind: 'error', code: 150, revision: rev });
+    const toast = await wa.next('toast', (m) => m.level === 'warn');
+    expect(toast.message).toMatch(/^Couldn't play Song 1: .+\. It was skipped\.$/);
+    expect(toast.ttlMs).toBe(8000);
+    await flush(wb);
+    expect(wb.messages.some((m) => m.type === 'toast' && m.level === 'warn')).toBe(false);
+    for (const c of [p, wa, wb]) c.ws.terminate();
+  });
+
   it('requests beat fallback after the current track', async () => {
     hub.yt.add({ id: vid(20), title: 'Auto A' }, { id: vid(21), title: 'Auto B' });
     hub.yt.playlists.set('PLfallback0001', { items: [{ id: vid(20) }, { id: vid(21) }] });

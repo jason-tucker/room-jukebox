@@ -113,6 +113,7 @@ export class SettingsService {
   toPublic(): SettingsPublic {
     const row = this.row();
     const d = row.data;
+    const usableKey = (this.apiKey() ?? '') !== '';
     return {
       roomName: d.roomName,
       lanPort: d.lanPort,
@@ -121,8 +122,8 @@ export class SettingsService {
       fallbackPlaylists: this.#repos.playlists.list().map(toPlaylistInfo),
       wifi: d.wifi ? { ...d.wifi } : null,
       hasWifiPassword: row.wifiPasswordEnc !== null,
-      hasApiKey: row.apiKeyEnc !== null,
-      apiKeyLast4: row.apiKeyEnc !== null ? row.apiKeyLast4 : null,
+      hasApiKey: usableKey,
+      apiKeyLast4: usableKey ? row.apiKeyLast4 : null,
       tvDisplayId: d.tvDisplayId,
       autoStart: d.autoStart,
       autoFullscreen: d.autoFullscreen,
