@@ -75,12 +75,33 @@ password, the YouTube API key and the TV display.
 
 ## Phones
 
-_To be written during M1._ Guests join by scanning the QR code shown on the TV; no app install is
-needed.
+Guests join by scanning the QR codes on the TV: **Join the Wi-Fi** (when the owner entered the venue
+Wi-Fi in settings), then **Request a song**. No app install and no account are needed; the page
+follows the phone's light or dark setting.
 
-During M0 a phone on the same Wi-Fi can open the spike control page at
-`http://<hub-lan-ip>:8080/spike` to play, pause, seek and skip. Phones never embed the YouTube
-player themselves, so the raw LAN IP is fine for them.
+1. The first visit shows a short notice (YouTube Terms of Service and the Room Jukebox privacy
+   policy). Tap **Continue**; the phone remembers it.
+2. Tap **Find on YouTube**. The YouTube app (or m.youtube.com) opens; find the song.
+3. In YouTube tap **Share → Copy link**, come back to the jukebox tab and tap **Paste link**.
+4. Check the **Request this song?** card and tap **Request it**. Songs that cannot play here (too
+   long for this room, age-restricted, not allowed outside YouTube, live, private) are explained in
+   plain words and cannot be requested.
+
+If the phone refuses to let the page read the clipboard (some browsers on plain `http://`), paste
+the link into the box under **Paste link** instead. When the owner added a YouTube API key, a
+search box also appears; it is submit-only and has a small daily allowance, and it disappears when
+the allowance is used up, while Find on YouTube and Paste link keep working.
+
+The page also shows Now Playing, the live queue (your own requests are highlighted) and an
+optional name field. **More → Forget me** at the bottom deletes what Room Jukebox stored about you
+(it does not affect data stored by YouTube). The small **Owner login** link at the very bottom
+opens `/admin`, which works only from the party Wi-Fi or the laptop itself.
+
+Owner pages: `/admin` on a phone (password), `/setup` on the hub laptop at first run, `/privacy`
+for everyone. The M0 diagnostics pages stay at `/spike` and `/tv-spike`.
+
+For web development without a server, `VITE_MOCK=1 pnpm --filter web dev` runs the pages against an
+in-browser mock hub (`apps/web/src/dev/mock.ts`; owner password `jukebox1`, `/setup?mocksetup=1`).
 
 ## Troubleshooting
 
