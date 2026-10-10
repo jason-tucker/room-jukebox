@@ -153,6 +153,7 @@ export const SetupReplySchema = z.object({
   ok: z.literal(true),
   token: z.string(),
   playerToken: z.string(),
+  playerId: z.string().min(1),
 });
 export type SetupReply = z.infer<typeof SetupReplySchema>;
 

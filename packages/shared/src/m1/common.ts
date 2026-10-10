@@ -29,6 +29,16 @@ export const ApiErrorCodeSchema = z.enum([
   'playlist-not-found',
   'no-api-key',
   'bad-message',
+  'forbidden-source',
+  'already-set-up',
+  'unauthorized',
+  'cross-site',
+  'needs-setup',
+  'bad-request',
+  'bad-link',
+  'youtube-unavailable',
+  'internal',
+  'stopped',
 ]);
 export type ApiErrorCode = z.infer<typeof ApiErrorCodeSchema>;
 

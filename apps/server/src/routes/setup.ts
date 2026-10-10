@@ -71,6 +71,6 @@ export async function registerSetupRoutes(app: FastifyInstance, ctx: AppContext)
     await runHook(request, () =>
       ctx.hooks.onSetupComplete?.({ token, playerToken: player.token, playerId: player.playerId }),
     );
-    return { ok: true, token, playerToken: player.token };
+    return { ok: true, token, playerToken: player.token, playerId: player.playerId };
   });
 }
