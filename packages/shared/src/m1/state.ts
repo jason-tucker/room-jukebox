@@ -48,6 +48,8 @@ export const SettingsPublicSchema = z.object({
   publicMode: z.boolean(),
   hubId: IdSchema,
   hubEpoch: z.number().int().nonnegative(),
+  /** Search fallback to YouTube's public results page once the API quota is used (owner toggle). */
+  search: z.object({ unofficialFallback: z.boolean() }).optional(),
 });
 export type SettingsPublic = z.infer<typeof SettingsPublicSchema>;
 

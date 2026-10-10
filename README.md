@@ -246,8 +246,15 @@ YouTube Data API. By using it you agree to the
 [YouTube Terms of Service](https://www.youtube.com/t/terms) and the
 [Google Privacy Policy](https://policies.google.com/privacy). The app's own privacy notice is shown
 at `/privacy`. It stores only what is needed to run the party on the owner's laptop (the queue,
-request names guests choose to type, and settings); nothing is sent anywhere other than YouTube's
-APIs. Each owner supplies their own YouTube API key; keys are never committed to this repository.
+request names guests choose to type, and settings); nothing is sent anywhere other than YouTube.
+Each owner supplies their own YouTube API key; keys are never committed to this repository.
+
+**Search fallback.** The Data API allows about 100 searches a day per key. When that allowance is
+used up, or no key is configured, the hub can read YouTube's public search results page directly
+("Results via YouTube's public page" appears under the search box). That mode is not covered by
+the YouTube API terms, may conflict with YouTube's terms of service for automated access, and can
+stop working whenever YouTube changes its page. It is on by default; the owner can turn it off in
+the admin settings (`search.unofficialFallback`). Playback always uses the official embedded player.
 
 ## License
 
