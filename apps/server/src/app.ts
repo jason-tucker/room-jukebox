@@ -26,12 +26,17 @@ export interface BuildAppOptions {
   spikeDataDir?: string;
   /** M0 spike: inject a session (tests). */
   spikeSession?: SpikeSession;
+  /** M0 spike: start the first matrix video as soon as the server is up (desktop default). */
+  spikeAutoplay?: boolean;
+  /** Skip Fastify's per-request info logs (the desktop log otherwise records every request). */
+  disableRequestLogging?: boolean;
 }
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
-  const app = Fastify(
-    options.loggerInstance ? { loggerInstance: options.loggerInstance } : { logger: false },
-  );
+  const app = Fastify({
+    ...(options.loggerInstance ? { loggerInstance: options.loggerInstance } : { logger: false }),
+    disableRequestLogging: options.disableRequestLogging ?? false,
+  });
 
   // YouTube embeds fail (error 153) under `no-referrer`; never use helmet defaults here.
   app.addHook('onRequest', async (_request, reply) => {
@@ -55,6 +60,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerSpike(app, {
     dataDir: options.spikeDataDir ?? process.env.SPIKE_DATA_DIR ?? './data',
     ...(options.spikeSession ? { session: options.spikeSession } : {}),
+    autoplay: options.spikeAutoplay ?? false,
   });
 
   const webRoot = options.webRoot ?? DEFAULT_WEB_ROOT;

@@ -21,6 +21,8 @@ export interface SpikeOptions {
   /** Directory for `spike-results.jsonl`. */
   dataDir: string;
   session?: SpikeSession;
+  /** Start the first matrix video immediately when nothing is playing. */
+  autoplay?: boolean;
 }
 
 function parseBody<T extends z.ZodType>(
@@ -42,6 +44,7 @@ function parseBody<T extends z.ZodType>(
  */
 export async function registerSpike(app: FastifyInstance, options: SpikeOptions): Promise<void> {
   const session = options.session ?? new SpikeSession();
+  if (options.autoplay && session.snapshot().nowPlaying === null) session.next();
   const results = new SpikeResults(options.dataDir);
   const sockets = new Set<WebSocket>();
   const playerBySocket = new Map<WebSocket, string>();

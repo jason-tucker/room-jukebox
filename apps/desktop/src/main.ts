@@ -70,14 +70,36 @@ function hubId(): string {
 type FastifyLogger = NonNullable<BuildAppOptions['loggerInstance']>;
 
 /** Fastify logger interface on top of electron-log (debug/trace are dropped). */
+/** Keep server log lines short: pino passes request/reply objects whose default serialisation
+ * (electron-log's) dumps function source; keep primitives, error messages and a trimmed JSON. */
+function compactArg(a: unknown): unknown {
+  if (a === null || typeof a !== 'object') return a;
+  if (a instanceof Error) return `${a.name}: ${a.message}`;
+  const seen = new WeakSet<object>();
+  try {
+    const text = JSON.stringify(a, (_k, v: unknown) => {
+      if (typeof v === 'function' || typeof v === 'symbol') return undefined;
+      if (v && typeof v === 'object') {
+        if (seen.has(v)) return '[circular]';
+        seen.add(v);
+      }
+      return v;
+    });
+    return text && text.length > 600 ? `${text.slice(0, 600)}…` : text;
+  } catch {
+    return '[unserialisable]';
+  }
+}
+
 function fastifyLogger(): FastifyLogger {
   const noop = (): void => undefined;
+  const c = (a: unknown[]): unknown[] => a.map(compactArg);
   const logger = {
     level: 'info',
-    fatal: (...a: unknown[]) => log.error('[server]', ...a),
-    error: (...a: unknown[]) => log.error('[server]', ...a),
-    warn: (...a: unknown[]) => log.warn('[server]', ...a),
-    info: (...a: unknown[]) => log.info('[server]', ...a),
+    fatal: (...a: unknown[]) => log.error('[server]', ...c(a)),
+    error: (...a: unknown[]) => log.error('[server]', ...c(a)),
+    warn: (...a: unknown[]) => log.warn('[server]', ...c(a)),
+    info: (...a: unknown[]) => log.info('[server]', ...c(a)),
     debug: noop,
     trace: noop,
     silent: noop,
@@ -200,7 +222,13 @@ function createWindow(): BrowserWindow {
 
 async function startHub(root: string): Promise<string> {
   const spikeDataDir = join(app.getPath('userData'), 'data');
-  const server = await buildApp({ webRoot: root, loggerInstance: fastifyLogger(), spikeDataDir });
+  const server = await buildApp({
+    webRoot: root,
+    loggerInstance: fastifyLogger(),
+    spikeDataDir,
+    spikeAutoplay: true,
+    disableRequestLogging: true,
+  });
   try {
     // Dual-stack so `http://localhost` works whether Chromium picks ::1 or 127.0.0.1.
     await server.listen({ port: LAN_PORT, host: '::' });

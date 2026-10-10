@@ -218,3 +218,16 @@ describe('spike API + WebSocket', () => {
     expect(String(res.headers['access-control-allow-methods'])).toContain('DELETE');
   });
 });
+
+describe('spikeAutoplay option', () => {
+  it('starts the first matrix video when enabled', async () => {
+    const app = await buildApp({ spikeAutoplay: true, spikeDataDir: mkdtempSync(join(tmpdir(), 'spike-')) });
+    try {
+      const res = await app.inject({ method: 'GET', url: '/api/spike/state' });
+      expect(res.statusCode).toBe(200);
+      expect(res.json().nowPlaying).not.toBeNull();
+    } finally {
+      await app.close();
+    }
+  });
+});
