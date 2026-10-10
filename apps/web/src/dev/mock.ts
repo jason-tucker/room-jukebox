@@ -6,7 +6,9 @@
  *
  * Handy inputs: owner password "jukebox1"; open /setup?mocksetup=1 to see the wizard; resolve
  * "blockedvid1" for a not-embeddable verdict and "toolongvid1" for an over-limit one; search
- * "quota" for the daily-quota error, "low" to flip the low banner, "zero" to exhaust guest search.
+ * "quota" to switch to the unofficial provider (as when the API quota runs out), "budget" for the
+ * per-guest budget error, "down" for YouTube not answering, "off" to turn guest search off (reload
+ * to undo), "low" to flip the low banner, "zero" to exhaust guest search.
  */
 import type {
   AdminState,
@@ -17,6 +19,7 @@ import type {
   PlayerState,
   PlaylistInfo,
   ResolveReply,
+  SearchProvider,
   ServerMessage,
   SettingsPublic,
   VideoCard,
@@ -99,6 +102,8 @@ class MockHub {
   failedLogins = 0;
   needsSetup = new URLSearchParams(location.search).has('mocksetup');
   searchLow = false;
+  searchOff = false;
+  searchProvider: SearchProvider = 'youtube-api';
   guestSearchesLeft: number | null = 5;
   searchUsage = { guests: 3, owner: 1, resetsAt: Date.now() + 6 * 3600_000 };
   lastErrors: AdminState['lastErrors'] = [];
@@ -273,9 +278,10 @@ class MockHub {
       queue: this.queue.map((e) => this.#pub(e)),
       recentHistory: this.history.map((e) => this.#pub(e)),
       search: {
-        enabled: this.settings.hasApiKey && this.guestSearchesLeft !== null,
+        enabled: !this.searchOff && this.guestSearchesLeft !== null,
         remaining: this.guestSearchesLeft,
         low: this.searchLow,
+        provider: this.searchProvider,
       },
       limits: {
         maxPendingPerGuest: this.settings.limits.maxPendingPerGuest,
@@ -527,7 +533,14 @@ class MockHub {
       case 'POST /api/admin/search': {
         const q = String(b.q ?? '');
         const owner = p.startsWith('/api/admin');
-        if (q === 'quota') return err(429, 'daily-quota', 'Daily quota used');
+        if (q === 'budget') return err(429, 'search-budget', 'Guest search budget used');
+        if (q === 'down') return err(502, 'youtube-unavailable', 'YouTube did not answer');
+        if (!owner && q === 'off') {
+          this.searchOff = true;
+          this.broadcast();
+          return err(503, 'search-disabled', 'Search is disabled');
+        }
+        if (q === 'quota') this.searchProvider = 'unofficial';
         if (!owner && q === 'low') this.searchLow = !this.searchLow;
         if (!owner && q === 'zero') this.guestSearchesLeft = 0;
         else if (!owner && this.guestSearchesLeft !== null)
@@ -539,6 +552,7 @@ class MockHub {
           results: this.search(q),
           remaining: owner ? null : this.guestSearchesLeft,
           cached: false,
+          provider: this.searchProvider,
         });
       }
       case 'GET /api/privacy.json':

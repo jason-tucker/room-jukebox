@@ -9,7 +9,7 @@ import {
 import { NowPlayingCard } from '../components/NowPlayingCard.tsx';
 import { QueueList } from '../components/QueueList.tsx';
 import { ResolveSheet } from '../components/ResolveSheet.tsx';
-import { SearchBox } from '../components/SearchBox.tsx';
+import { SearchBox, type SearchView } from '../components/SearchBox.tsx';
 import { ToastHost, useToasts } from '../components/Toasts.tsx';
 import { btn, input, Notice, Spinner, TopBar } from '../components/ui.tsx';
 import { api } from '../lib/api.ts';
@@ -34,7 +34,13 @@ export function Guest() {
   const [stepsOpen] = useState(() => readLocal(KEYS.stepsSeen) !== '1');
   const [manual, setManual] = useState('');
   const [forgetDone, setForgetDone] = useState(false);
+  const [searchView, setSearchView] = useState<SearchView>({
+    showingResults: false,
+    resting: false,
+  });
+  const [npExpanded, setNpExpanded] = useState(false);
   const manualRef = useRef<HTMLInputElement>(null);
+  const npRef = useRef<HTMLElement>(null);
   const { toasts, push } = useToasts();
 
   const { state, status, client } = useSessionState('guest', { enabled: helloDone });
@@ -62,6 +68,16 @@ export function Guest() {
     if (!client) return;
     return client.onToast((t) => push(t.message, t.level, t.ttlMs));
   }, [client, push]);
+
+  // New results collapse Now Playing to the sticky bar again.
+  const onSearchView = useCallback((v: SearchView) => {
+    setSearchView(v);
+    setNpExpanded(false);
+  }, []);
+
+  useEffect(() => {
+    if (npExpanded) npRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+  }, [npExpanded]);
 
   const serverNow = useCallback(() => (client ? client.serverNow() : Date.now()), [client]);
 
@@ -148,6 +164,84 @@ export function Guest() {
   };
 
   const roomName = state?.roomName ?? S.app.name;
+  // Search is the main path; the paste flow leads only when search is off, and moves up right
+  // under the box when search is resting for today.
+  const pasteFirst = !!state && !state.search.enabled;
+  const pasteRaised = !pasteFirst && searchView.resting;
+  const npCollapsed = searchView.showingResults && !npExpanded;
+
+  const pasteSection = (
+    <section
+      aria-labelledby="paste-title"
+      data-testid="paste-section"
+      className="flex flex-col gap-3"
+    >
+      <h2 id="paste-title" className="text-xl font-bold">
+        {S.guest.pasteTitle}
+      </h2>
+      {pasteFirst && <Notice>{S.guest.searchOff}</Notice>}
+      <a
+        href={findOnYouTubeHref(navigator.userAgent)}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={markStepsSeen}
+        className={
+          pasteFirst
+            ? `${btn.primary} min-h-16 w-full text-xl`
+            : `${btn.secondary} min-h-14 w-full text-lg`
+        }
+      >
+        <svg aria-hidden viewBox="0 0 24 24" className="size-6" fill="currentColor">
+          <path d="M10.5 3a7.5 7.5 0 0 1 5.96 12.05l4.25 4.24-1.42 1.42-4.24-4.25A7.5 7.5 0 1 1 10.5 3Zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z" />
+        </svg>
+        {S.guest.find}
+      </a>
+      <details open={stepsOpen && pasteFirst} className="rounded-2xl">
+        <summary className="flex min-h-11 cursor-pointer items-center text-base font-semibold text-muted">
+          {S.guest.stepsTitle}
+        </summary>
+        <div className="pt-2">
+          <StepsStrip />
+        </div>
+      </details>
+      <button
+        type="button"
+        onClick={() => void onPaste()}
+        disabled={flow.resolving}
+        className={`${btn.secondary} min-h-14 w-full text-lg`}
+      >
+        <svg aria-hidden viewBox="0 0 24 24" className="size-6" fill="currentColor">
+          <path d="M16 3h-1.2a3 3 0 0 0-5.6 0H8a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Zm-4-1a1 1 0 1 1 0 2 1 1 0 0 1 0-2Zm4 18H8V5h1v2h6V5h1v15Z" />
+        </svg>
+        {flow.resolving ? S.guest.resolving : S.guest.paste}
+      </button>
+      <form onSubmit={(e) => void onManual(e)} className="flex flex-col gap-2">
+        <label htmlFor="manual-link" className="text-base text-muted">
+          {S.guest.manualLabel}
+        </label>
+        <div className="flex gap-2">
+          <input
+            id="manual-link"
+            ref={manualRef}
+            className={input}
+            inputMode="url"
+            autoComplete="off"
+            placeholder={S.guest.manualPlaceholder}
+            value={manual}
+            onChange={(e) => setManual(e.target.value)}
+          />
+          <button
+            type="submit"
+            className={btn.secondary}
+            disabled={!manual.trim() || flow.resolving}
+          >
+            {S.guest.manualSubmit}
+          </button>
+        </div>
+      </form>
+      {flow.inputError && <Notice tone="error">{flow.inputError}</Notice>}
+    </section>
+  );
 
   return (
     <div className="min-h-screen bg-bg text-fg">
@@ -155,86 +249,59 @@ export function Guest() {
       <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-4">
         {helloDone && status === 'reconnecting' && <Notice tone="warn">{S.guest.offline}</Notice>}
 
-        <section aria-label={S.guest.stepsTitle} className="flex flex-col gap-3">
-          <a
-            href={findOnYouTubeHref(navigator.userAgent)}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={markStepsSeen}
-            className={`${btn.primary} min-h-16 w-full text-xl`}
-          >
-            <svg aria-hidden viewBox="0 0 24 24" className="size-7" fill="currentColor">
-              <path d="M10.5 3a7.5 7.5 0 0 1 5.96 12.05l4.25 4.24-1.42 1.42-4.24-4.25A7.5 7.5 0 1 1 10.5 3Zm0 2a5.5 5.5 0 1 0 0 11 5.5 5.5 0 0 0 0-11Z" />
-            </svg>
-            {S.guest.find}
-          </a>
-          <details open={stepsOpen} className="rounded-2xl">
-            <summary className="flex min-h-11 cursor-pointer items-center text-base font-semibold text-muted">
-              {S.guest.stepsTitle}
-            </summary>
-            <div className="pt-2">
-              <StepsStrip />
-            </div>
-          </details>
-          <button
-            type="button"
-            onClick={() => void onPaste()}
-            disabled={flow.resolving}
-            className={`${btn.secondary} min-h-14 w-full text-lg`}
-          >
-            <svg aria-hidden viewBox="0 0 24 24" className="size-6" fill="currentColor">
-              <path d="M16 3h-1.2a3 3 0 0 0-5.6 0H8a2 2 0 0 0-2 2v15a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2Zm-4-1a1 1 0 1 1 0 2 1 1 0 0 1 0-2Zm4 18H8V5h1v2h6V5h1v15Z" />
-            </svg>
-            {flow.resolving ? S.guest.resolving : S.guest.paste}
-          </button>
-          <form onSubmit={(e) => void onManual(e)} className="flex flex-col gap-2">
-            <label htmlFor="manual-link" className="text-base text-muted">
-              {S.guest.manualLabel}
-            </label>
-            <div className="flex gap-2">
-              <input
-                id="manual-link"
-                ref={manualRef}
-                className={input}
-                inputMode="url"
-                autoComplete="off"
-                placeholder={S.guest.manualPlaceholder}
-                value={manual}
-                onChange={(e) => setManual(e.target.value)}
-              />
-              <button
-                type="submit"
-                className={btn.secondary}
-                disabled={!manual.trim() || flow.resolving}
-              >
-                {S.guest.manualSubmit}
-              </button>
-            </div>
-          </form>
-          {flow.inputError && <Notice tone="error">{flow.inputError}</Notice>}
-        </section>
+        {pasteFirst && pasteSection}
 
-        {state && (
+        {state ? (
           <SearchBox
             search={state.search}
             runSearch={api.guest.search}
             onPick={flow.open}
+            onViewChange={onSearchView}
             ctx={ctx}
           />
+        ) : null}
+
+        {pasteRaised && pasteSection}
+
+        {npCollapsed ? (
+          <button
+            type="button"
+            data-testid="now-playing-bar"
+            aria-label={S.guest.showNowPlaying}
+            onClick={() => setNpExpanded(true)}
+            className="sticky bottom-3 z-20 flex min-h-12 w-full items-center gap-2 rounded-full bg-surface-2 px-4 py-2 text-left text-base font-semibold shadow-lg ring-1 ring-line"
+          >
+            <span aria-hidden className="size-2 shrink-0 rounded-full bg-accent" />
+            <span className="min-w-0 flex-1 truncate">
+              {S.guest.nowPlayingBar(state?.playback.nowPlaying?.title ?? null)}
+            </span>
+            <svg aria-hidden viewBox="0 0 24 24" className="size-5 shrink-0" fill="currentColor">
+              <path d="m7.4 15.4 4.6-4.6 4.6 4.6L18 14l-6-6-6 6z" />
+            </svg>
+          </button>
+        ) : (
+          <>
+            <section
+              ref={npRef}
+              aria-label={S.guest.nowPlaying}
+              data-testid="now-playing"
+              className="flex scroll-mt-20 flex-col gap-2"
+            >
+              <h2 className="text-xl font-bold">{S.guest.nowPlaying}</h2>
+              {state ? (
+                <NowPlayingCard np={state.playback.nowPlaying} serverNow={serverNow} />
+              ) : (
+                <Spinner />
+              )}
+            </section>
+
+            {state && (
+              <QueueList entries={state.queue} title={S.guest.upNext} empty={S.guest.queueEmpty} />
+            )}
+          </>
         )}
 
-        <section aria-label={S.guest.nowPlaying} className="flex flex-col gap-2">
-          <h2 className="text-xl font-bold">{S.guest.nowPlaying}</h2>
-          {state ? (
-            <NowPlayingCard np={state.playback.nowPlaying} serverNow={serverNow} />
-          ) : (
-            <Spinner />
-          )}
-        </section>
-
-        {state && (
-          <QueueList entries={state.queue} title={S.guest.upNext} empty={S.guest.queueEmpty} />
-        )}
+        {!pasteFirst && !pasteRaised && pasteSection}
 
         <form onSubmit={(e) => void saveName(e)} className="flex flex-col gap-2">
           <label htmlFor="guest-name" className="text-base font-semibold">

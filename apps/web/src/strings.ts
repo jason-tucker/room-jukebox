@@ -95,6 +95,11 @@ export const S = {
     added: (title: string) => `Added: ${title}`,
     alreadyQueued: (title: string) => `${title} is already in the queue`,
     offline: 'Reconnecting to the jukebox…',
+    pasteTitle: 'Have a link? Paste it',
+    searchOff: 'Search is off; paste a link instead',
+    nowPlayingBar: (title: string | null) =>
+      title ? `Now playing: ${title}` : 'Now playing: nothing yet',
+    showNowPlaying: 'Show now playing and the queue',
   },
 
   sheet: {
@@ -109,9 +114,15 @@ export const S = {
 
   search: {
     label: 'Search YouTube',
-    placeholder: 'Song or artist',
+    placeholder: 'Search YouTube for a song',
     submit: 'Search',
-    low: 'Search is almost used up for today. Find on YouTube and Paste link always work.',
+    searching: 'Searching…',
+    results: 'Search results',
+    clear: 'Clear',
+    unofficial: "Results via YouTube's public page",
+    resting: 'Search is resting for today; paste a link instead',
+    youtubeDown: "YouTube didn't answer, try again",
+    low: 'Search is almost used up for today. Paste link always works.',
     usedUp: 'Search is used up for today. Use Find on YouTube and Paste link instead.',
     remaining: (n: number) => `${n} ${n === 1 ? 'search' : 'searches'} left for you today`,
     add: 'Add',

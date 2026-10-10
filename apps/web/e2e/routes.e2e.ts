@@ -31,13 +31,42 @@ const guestState = {
   flags: { hasApiKey: false, publicMode: false },
 };
 
-async function stubGuest(page: Page) {
+const searchOn = { enabled: true, remaining: 5, low: false, provider: 'youtube-api' };
+
+const searchReply = {
+  remaining: 4,
+  cached: false,
+  provider: 'youtube-api',
+  results: [
+    {
+      videoId: 'OPf0YbXqDm0',
+      title: 'Mark Ronson - Uptown Funk (Official Video) ft. Bruno Mars, a very long title indeed',
+      channelTitle: 'Mark Ronson',
+      thumbnail: 'data:image/gif;base64,R0lGODlhAQABAAAAACw=',
+      durationSec: 270,
+      playable: true,
+    },
+    {
+      videoId: 'blockedvid1',
+      title: 'Uptown Funk (live)',
+      channelTitle: 'Somebody',
+      thumbnail: 'data:image/gif;base64,R0lGODlhAQABAAAAACw=',
+      durationSec: 200,
+      playable: false,
+      reason: 'age-restricted',
+      source: 'youtube',
+    },
+  ],
+};
+
+async function stubGuest(page: Page, search: object = guestState.search) {
   const requests: unknown[] = [];
+  await page.route('**/api/search', (r) => r.fulfill({ json: searchReply }));
   await page.route('**/api/guest/hello', (r) =>
     r.fulfill({ json: { guestId: 'g1', name: null, noticeAccepted: false } }),
   );
   await page.route('**/api/guest/notice', (r) => r.fulfill({ json: { ok: true } }));
-  await page.route('**/api/session', (r) => r.fulfill({ json: guestState }));
+  await page.route('**/api/session', (r) => r.fulfill({ json: { ...guestState, search } }));
   await page.route('**/api/videos/resolve**', (r) =>
     r.fulfill({
       json: { videoId: 'OPf0YbXqDm0', title: 'Uptown Funk', durationSec: 270, playable: true },
@@ -63,6 +92,8 @@ test('guest: notice, then paste flow requests a song', async ({ page, context })
   await expect(page.getByRole('link', { name: 'YouTube Terms of Service' }).first()).toBeVisible();
   await page.getByRole('button', { name: 'Continue' }).click();
   await expect(page.getByRole('heading', { level: 1 })).toHaveText('Basement');
+  await expect(page.getByText('Search is off; paste a link instead')).toBeVisible();
+  await expect(page.getByRole('searchbox')).toHaveCount(0);
   await expect(page.getByRole('link', { name: 'Find on YouTube' })).toBeVisible();
   await expect(page.getByText('Your request')).toBeVisible();
 
@@ -79,6 +110,33 @@ test('guest: notice, then paste flow requests a song', async ({ page, context })
   await expect(page.getByRole('dialog', { name: 'Welcome to the jukebox' })).toHaveCount(0);
 });
 
+test('guest: search first, tap a result, request it from the sheet', async ({ page }) => {
+  const requests = await stubGuest(page, searchOn);
+  await page.addInitScript(() => localStorage.setItem('rj.noticeAccepted', '1'));
+  await page.goto('/');
+  const box = page.getByRole('searchbox');
+  await expect(box).toHaveAttribute('placeholder', 'Search YouTube for a song');
+  // Search box above the paste section.
+  const boxY = (await box.boundingBox())?.y ?? 0;
+  const pasteY =
+    (await page.getByRole('heading', { name: 'Have a link? Paste it' }).boundingBox())?.y ?? 0;
+  expect(boxY).toBeLessThan(pasteY);
+
+  await box.fill('uptown funk');
+  await box.press('Enter');
+  const rows = page.getByTestId('search-row');
+  await expect(rows).toHaveCount(2);
+  await expect(page.getByTestId('now-playing-bar')).toBeVisible();
+  await expect(rows.nth(1).getByRole('button')).toHaveCount(0);
+  await rows.first().getByRole('button').click();
+  const sheet = page.getByRole('dialog', { name: 'Request this song?' });
+  await expect(sheet).toBeVisible();
+  await sheet.getByRole('button', { name: 'Request it' }).click();
+  await expect(page.getByText('Added: Uptown Funk')).toBeVisible();
+  await expect(rows).toHaveCount(2);
+  expect(requests).toEqual([{ videoId: 'OPf0YbXqDm0', idempotencyKey: expect.any(String) }]);
+});
+
 test('guest: manual link field when the clipboard is refused', async ({ page }) => {
   await stubGuest(page);
   await page.addInitScript(() => localStorage.setItem('rj.noticeAccepted', '1'));
@@ -91,11 +149,17 @@ test('guest: manual link field when the clipboard is refused', async ({ page }) 
 });
 
 test('guest page fits a 360 px phone without horizontal scroll', async ({ page }) => {
-  await stubGuest(page);
+  await stubGuest(page, searchOn);
   await page.setViewportSize({ width: 360, height: 740 });
   await page.addInitScript(() => localStorage.setItem('rj.noticeAccepted', '1'));
   await page.goto('/');
   await expect(page.getByRole('link', { name: 'Find on YouTube' })).toBeVisible();
+  await page.getByRole('searchbox').fill('uptown');
+  await page.getByRole('button', { name: 'Search' }).click();
+  await expect(page.getByTestId('search-row')).toHaveCount(2);
+  const thumb = await page.getByTestId('search-row').first().locator('img').boundingBox();
+  expect(Math.round(thumb?.width ?? 0)).toBe(120);
+  expect(Math.round(thumb?.height ?? 0)).toBe(68);
   const overflow = await page.evaluate(
     () => document.documentElement.scrollWidth - window.innerWidth,
   );

@@ -4,6 +4,12 @@ export function thumbFor(videoId: string, thumbnail?: string | null): string {
   return thumbnail || `https://i.ytimg.com/vi/${encodeURIComponent(videoId)}/mqdefault.jpg`;
 }
 
+const THUMB = {
+  sm: 'h-[68px] w-[120px]',
+  md: 'aspect-video w-28 sm:w-40',
+  lg: 'aspect-video w-40 sm:w-56',
+} as const;
+
 /** YouTube-style row: 16:9 thumbnail on the left, title and details on the right. */
 export function VideoRow({
   videoId,
@@ -24,7 +30,8 @@ export function VideoRow({
   action?: ReactNode;
   dimmed?: boolean;
   highlight?: boolean;
-  size?: 'md' | 'lg';
+  /** `sm` is the search-result row: a fixed 120×68 thumbnail. */
+  size?: 'sm' | 'md' | 'lg';
 }) {
   return (
     <div
@@ -36,10 +43,14 @@ export function VideoRow({
         src={thumbFor(videoId, thumbnail)}
         alt=""
         loading="lazy"
-        className={`${size === 'lg' ? 'w-40 sm:w-56' : 'w-28 sm:w-40'} aspect-video shrink-0 rounded-xl bg-surface-2 object-cover`}
+        className={`${THUMB[size]} shrink-0 rounded-xl bg-surface-2 object-cover`}
       />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-        <div className="line-clamp-2 text-lg leading-snug font-semibold break-words">{title}</div>
+        <div
+          className={`line-clamp-2 ${size === 'sm' ? 'text-base' : 'text-lg'} leading-snug font-semibold break-words`}
+        >
+          {title}
+        </div>
         {lines.map((l, i) =>
           l ? (
             <div key={i} className="text-base text-muted">

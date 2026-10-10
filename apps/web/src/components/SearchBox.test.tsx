@@ -1,5 +1,5 @@
 import type { SearchReply } from '@room-jukebox/shared';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ApiResult } from '../lib/api.ts';
 import { S } from '../strings.ts';
@@ -67,10 +67,16 @@ describe('SearchBox', () => {
       expect.stringContaining('Third'),
     ]);
     expect(rows[1]).toHaveTextContent(S.reasons['not-embeddable']);
-    expect(screen.getByRole('button', { name: `${S.search.add}: Blocked one` })).toBeDisabled();
-    fireEvent.click(screen.getByRole('button', { name: `${S.search.add}: Good one` }));
+    // Playable rows are one big button; the greyed row is not a button at all.
+    expect(within(rows[0]!).getByRole('button')).toHaveTextContent('Good one');
+    expect(within(rows[1]!).queryByRole('button')).toBeNull();
+    expect(rows[1]!.querySelector('[aria-disabled="true"]')).not.toBeNull();
+    fireEvent.click(within(rows[1]!).getByText('Blocked one'));
+    expect(onPick).not.toHaveBeenCalled();
+    fireEvent.click(within(rows[0]!).getByRole('button'));
     expect(onPick).toHaveBeenCalledWith(reply.results[0]);
-    expect(screen.getByText(S.search.remaining(3))).toBeInTheDocument();
+    // `remaining` only shows when search is low.
+    expect(screen.queryByText(S.search.remaining(3), { exact: false })).toBeNull();
   });
 
   it('shows the low banner', () => {
@@ -81,8 +87,10 @@ describe('SearchBox', () => {
         onPick={() => undefined}
       />,
     );
-    expect(screen.getByText(S.search.low)).toBeInTheDocument();
-    expect(screen.getByRole('searchbox')).toBeInTheDocument();
+    expect(screen.getByText(S.search.low, { exact: false })).toHaveTextContent(
+      S.search.remaining(1),
+    );
+    expect(screen.getByRole('searchbox')).toHaveAttribute('placeholder', S.search.placeholder);
   });
 
   it('hides the box when nothing remains', () => {
@@ -97,21 +105,58 @@ describe('SearchBox', () => {
     expect(screen.getByText(S.search.usedUp)).toBeInTheDocument();
   });
 
-  it('shows a plain-words error on budget exhaustion', async () => {
+  it.each([
+    [429, 'search-budget', S.search.resting, true],
+    [429, 'daily-quota', S.search.resting, true],
+    [503, 'search-disabled', S.search.resting, true],
+    [502, 'youtube-unavailable', S.search.youtubeDown, false],
+  ])('maps %i %s to plain words', async (status, code, text, resting) => {
     const run = () =>
       Promise.resolve<ApiResult<SearchReply>>({
         ok: false,
-        error: { status: 429, code: 'search-budget', message: 'x' },
+        error: { status, code, message: 'x' },
       });
+    const onViewChange = vi.fn();
     render(
       <SearchBox
         search={{ enabled: true, remaining: 2, low: false }}
         runSearch={run}
         onPick={() => undefined}
+        onViewChange={onViewChange}
       />,
     );
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'q' } });
     fireEvent.submit(screen.getByRole('search'));
-    expect(await screen.findByText(S.errors['search-budget'])).toBeInTheDocument();
+    expect(await screen.findByText(text)).toBeInTheDocument();
+    expect(onViewChange).toHaveBeenLastCalledWith({ showingResults: false, resting });
+  });
+
+  it('notes the unofficial provider in one quiet line', async () => {
+    render(
+      <SearchBox
+        search={{ enabled: true, remaining: null, low: false, provider: 'youtube-api' }}
+        runSearch={() =>
+          Promise.resolve({ ok: true, status: 200, data: { ...reply, provider: 'unofficial' } })
+        }
+        onPick={() => undefined}
+      />,
+    );
+    expect(screen.queryByTestId('search-provider-note')).toBeNull();
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'q' } });
+    fireEvent.submit(screen.getByRole('search'));
+    expect(await screen.findByTestId('search-provider-note')).toHaveTextContent(
+      S.search.unofficial,
+    );
+  });
+
+  it('shows the provider note before any search when the server says so', () => {
+    render(
+      <SearchBox
+        search={{ enabled: true, remaining: null, low: false, provider: 'unofficial' }}
+        runSearch={ok}
+        onPick={() => undefined}
+      />,
+    );
+    expect(screen.getByTestId('search-provider-note')).toBeInTheDocument();
   });
 });

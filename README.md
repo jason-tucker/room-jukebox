@@ -106,19 +106,26 @@ follows the phone's light or dark setting.
 
 1. The first visit shows a short notice (YouTube Terms of Service and the Room Jukebox privacy
    policy). Tap **Continue**; the phone remembers it.
-2. Tap **Find on YouTube**. The YouTube app (or m.youtube.com) opens; find the song.
-3. In YouTube tap **Share → Copy link**, come back to the jukebox tab and tap **Paste link**.
-4. Check the **Request this song?** card and tap **Request it**. Songs that cannot play here (too
-   long for this room, age-restricted, not allowed outside YouTube, live, private) are explained in
-   plain words and cannot be requested.
+2. Type a song or artist into **Search YouTube for a song** at the top and tap **Search** (or press
+   Enter). Results appear in YouTube's order, thumbnail on the left. Songs that cannot play here
+   (too long for this room, age-restricted, not allowed outside YouTube, live, private) stay in the
+   list, greyed, with the reason in plain words, and cannot be tapped.
+3. Tap a result. The **Request this song?** card shows the title, length and whether it can play;
+   tap **Request it**. A short "Added: …" message confirms it, and the results stay so you can add
+   another one.
 
-If the phone refuses to let the page read the clipboard (some browsers on plain `http://`), paste
-the link into the box under **Paste link** instead. When the owner added a YouTube API key, a
-search box also appears; it is submit-only and has a small daily allowance, and it disappears when
-the allowance is used up, while Find on YouTube and Paste link keep working.
+**Have a link? Paste it** sits under the results: tap **Find on YouTube** (the YouTube app or
+m.youtube.com opens), then in YouTube **Share → Copy link**, come back and tap **Paste link**. If
+the phone refuses to let the page read the clipboard (some browsers on plain `http://`), paste the
+link into the box under **Paste link** instead. When search is turned off this section comes first
+("Search is off; paste a link instead"); when search is resting for the day it moves right under
+the search box. A small banner warns when today's searches are almost used up. When the jukebox
+answers searches from YouTube's public page instead of the API, a quiet line under the box says
+"Results via YouTube's public page".
 
-The page also shows Now Playing, the live queue (your own requests are highlighted) and an
-optional name field. **More → Forget me** at the bottom deletes what Room Jukebox stored about you
+Under the results come Now Playing and the live queue (your own requests are highlighted); while
+results are on screen they fold into a small **Now playing: …** bar at the bottom, tap it to open
+them. Further down is an optional name field. **More → Forget me** at the bottom deletes what Room Jukebox stored about you
 (it does not affect data stored by YouTube). The small **Owner login** link at the very bottom
 opens `/admin`, which works only from the party Wi-Fi or the laptop itself.
 
@@ -126,7 +133,9 @@ Owner pages: `/admin` on a phone (password), `/setup` on the hub laptop at first
 for everyone. The M0 diagnostics pages stay at `/spike` and `/tv-spike`.
 
 For web development without a server, `VITE_MOCK=1 pnpm --filter web dev` runs the pages against an
-in-browser mock hub (`apps/web/src/dev/mock.ts`; owner password `jukebox1`, `/setup?mocksetup=1`).
+in-browser mock hub (`apps/web/src/dev/mock.ts`; owner password `jukebox1`, `/setup?mocksetup=1`). Search words flip
+the mock's modes: `quota` (answers via the unofficial provider from then on), `budget`, `down`,
+`off` (guest search off until reload), `low`, `zero`.
 
 ## Troubleshooting
 
