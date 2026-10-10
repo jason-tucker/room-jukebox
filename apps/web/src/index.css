@@ -1,1 +1,81 @@
 @import 'tailwindcss';
+
+/*
+ * Room Jukebox theme: YouTube-style layout, own brand. Accent is deep teal (never YouTube red);
+ * red is only used for small error/status marks. Light/dark follows the phone setting.
+ */
+:root {
+  color-scheme: light dark;
+  --rj-bg: #ffffff;
+  --rj-surface: #f2f2f2;
+  --rj-surface-2: #e5e5e5;
+  --rj-fg: #0f0f0f;
+  --rj-muted: #575757;
+  --rj-line: #dcdcdc;
+  --rj-accent: #0b6b63;
+  --rj-accent-hover: #095a53;
+  --rj-accent-fg: #ffffff;
+  --rj-accent-soft: #d3eeea;
+  --rj-danger: #c62828;
+  --rj-warn-soft: #fff3cd;
+  --rj-warn-fg: #5c4400;
+  --rj-backdrop: rgb(0 0 0 / 0.5);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --rj-bg: #0f0f0f;
+    --rj-surface: #1d1d1d;
+    --rj-surface-2: #2a2a2a;
+    --rj-fg: #f1f1f1;
+    --rj-muted: #b0b0b0;
+    --rj-line: #333333;
+    --rj-accent: #3cc4b4;
+    --rj-accent-hover: #5fd3c5;
+    --rj-accent-fg: #04201d;
+    --rj-accent-soft: #123b37;
+    --rj-danger: #ff7070;
+    --rj-warn-soft: #3d3200;
+    --rj-warn-fg: #ffe28a;
+    --rj-backdrop: rgb(0 0 0 / 0.7);
+  }
+}
+
+@theme inline {
+  --color-bg: var(--rj-bg);
+  --color-surface: var(--rj-surface);
+  --color-surface-2: var(--rj-surface-2);
+  --color-fg: var(--rj-fg);
+  --color-muted: var(--rj-muted);
+  --color-line: var(--rj-line);
+  --color-accent: var(--rj-accent);
+  --color-accent-hover: var(--rj-accent-hover);
+  --color-accent-fg: var(--rj-accent-fg);
+  --color-accent-soft: var(--rj-accent-soft);
+  --color-danger: var(--rj-danger);
+  --color-warn-soft: var(--rj-warn-soft);
+  --color-warn-fg: var(--rj-warn-fg);
+  --color-backdrop: var(--rj-backdrop);
+  --font-sans:
+    system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+}
+
+/* 1rem = 18 px: Tailwind's text-base is the smallest text the phone pages use. */
+html {
+  font-size: 18px;
+  scrollbar-gutter: stable;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--rj-bg);
+  color: var(--rj-fg);
+  font-family: var(--font-sans);
+  line-height: 1.4;
+}
+
+:focus-visible {
+  outline: 3px solid var(--rj-accent);
+  outline-offset: 2px;
+}

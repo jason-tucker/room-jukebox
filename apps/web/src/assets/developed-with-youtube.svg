@@ -1,0 +1,15 @@
+<!--
+  "Developed with YouTube" attribution lockup (YouTube API Services branding guidelines:
+  https://developers.google.com/youtube/terms/branding-guidelines). Stored locally because the
+  guidelines' assets must not be hotlinked. This file reproduces the lockup's layout (text label,
+  logo icon, wordmark) as vector shapes; before a public release replace it with the official SVG
+  downloaded from the branding page, unmodified. Text uses currentColor so it follows light/dark.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 196 40" role="img" aria-label="Developed with YouTube">
+  <text x="0" y="25" font-family="system-ui, -apple-system, 'Segoe UI', Arial, sans-serif" font-size="13" fill="currentColor">developed with</text>
+  <g transform="translate(98 8)">
+    <rect x="0" y="0" width="34" height="24" rx="6" ry="6" fill="#FF0000"/>
+    <path d="M13.5 6.8 L23 12 L13.5 17.2 Z" fill="#FFFFFF"/>
+    <text x="38" y="18.5" font-family="system-ui, -apple-system, 'Segoe UI', Arial, sans-serif" font-size="17" font-weight="700" letter-spacing="-0.6" fill="currentColor">YouTube</text>
+  </g>
+</svg>
