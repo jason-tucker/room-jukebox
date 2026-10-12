@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import type { GuestState } from '@room-jukebox/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FetchLike } from '../src/youtube/client.ts';
@@ -118,7 +120,7 @@ describe('unofficial search parser', () => {
   });
 });
 
-describe('search fallback', () => {
+describe('search sources', () => {
   let hub: TestHub;
   let token: string;
   const admin = (method: 'GET' | 'POST' | 'PATCH', url: string, payload?: object) =>
@@ -172,223 +174,324 @@ describe('search fallback', () => {
   });
   afterEach(async () => hub.close());
 
-  it('settings: search.unofficialFallback defaults on, persists, validates', async () => {
-    expect((await admin('GET', '/api/admin/settings')).json().search).toEqual({
-      unofficialFallback: true,
-    });
-    const off = await admin('PATCH', '/api/admin/settings', {
-      search: { unofficialFallback: false },
-    });
-    expect(off.statusCode).toBe(200);
-    expect(off.json().search).toEqual({ unofficialFallback: false });
+  /** Rewrites the stored settings JSON's `search` (as an older version left it), then restarts. */
+  const storeSearch = async (search: object | undefined) => {
+    const db = new DatabaseSync(join(hub.dataDir, 'data.db'));
+    try {
+      const row = db.prepare('SELECT data FROM settings WHERE id = 1').get() as { data: string };
+      const data = JSON.parse(row.data) as Record<string, unknown>;
+      if (search === undefined) delete data.search;
+      else data.search = search;
+      db.prepare('UPDATE settings SET data = ? WHERE id = 1').run(JSON.stringify(data));
+    } finally {
+      db.close();
+    }
+    await hub.restart();
+  };
+
+  it('settings: search.source defaults to page, persists, validates', async () => {
+    expect((await admin('GET', '/api/admin/settings')).json().search).toEqual({ source: 'page' });
+    const api = await admin('PATCH', '/api/admin/settings', { search: { source: 'api-only' } });
+    expect(api.statusCode).toBe(200);
+    expect(api.json().search).toEqual({ source: 'api-only' });
     // other patches leave it alone; it survives a restart
     await admin('PATCH', '/api/admin/settings', { roomName: 'Den' });
     await hub.restart();
     expect((await admin('GET', '/api/admin/settings')).json()).toMatchObject({
       roomName: 'Den',
-      search: { unofficialFallback: false },
+      search: { source: 'api-only' },
     });
     expect((await admin('GET', '/api/admin/session')).json().settings.search).toEqual({
-      unofficialFallback: false,
+      source: 'api-only',
     });
-    const bad = await admin('PATCH', '/api/admin/settings', {
-      search: { unofficialFallback: 'yes' },
-    });
-    expect(bad.statusCode).toBe(400);
+    for (const search of [{ source: 'web' }, { unofficialFallback: 'yes' }, {}]) {
+      expect((await admin('PATCH', '/api/admin/settings', { search })).statusCode).toBe(400);
+    }
   });
 
-  it('official mode: provider youtube-api with the remaining count', async () => {
-    const g = new Guest(hub.app);
-    await g.hello();
-    expect(await state(g)).toEqual({
-      enabled: true,
-      remaining: 10,
-      low: true,
-      provider: 'youtube-api',
+  it('settings: the legacy unofficialFallback boolean maps to a source on PATCH', async () => {
+    const on = await admin('PATCH', '/api/admin/settings', {
+      search: { unofficialFallback: true },
     });
-    const res = await search(g, 'party');
-    expect(res.json()).toMatchObject({ provider: 'youtube-api', cached: false, remaining: 9 });
-    // the owner/admin view (no guest) shows the guests' shared remainder
-    expect((await admin('GET', '/api/admin/session')).json().search).toEqual({
-      enabled: true,
-      remaining: 79,
-      low: false,
-      provider: 'youtube-api',
+    expect(on.json().search).toEqual({ source: 'api-first' });
+    const off = await admin('PATCH', '/api/admin/settings', {
+      search: { unofficialFallback: false },
     });
-    expect(hub.yt.count('results')).toBe(0);
-  });
-
-  it('budget exhausted → unofficial results, pre-screened with videos.list; requests still work', async () => {
-    await exhaustGuests();
-    const g = new Guest(hub.app);
-    await g.hello();
-    expect(await state(g)).toEqual({
-      enabled: true,
-      remaining: null,
-      low: false,
-      provider: 'unofficial',
-    });
-    const res = await search(g, 'Party  Songs');
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body).toMatchObject({ provider: 'unofficial', remaining: null, cached: false });
-    expect(hub.yt.count('search')).toBe(0);
-    expect(hub.yt.count('results')).toBe(1);
-    expect(hub.yt.count('videos')).toBe(1);
-    expect(body.results.map((r: { videoId: string }) => r.videoId)).toEqual([1, 4, 7, 8].map(vid));
-    // videos.list rows win over the page: titles, embeddable, length, live
-    expect(body.results[0]).toMatchObject({ title: 'Good song', playable: true });
-    expect(body.results[1]).toMatchObject({ playable: false, reason: 'not-embeddable' });
-    expect(body.results[2]).toMatchObject({ playable: false, reason: 'too-long', source: 'owner' });
-    expect(body.results[3]).toMatchObject({ playable: false, reason: 'live' });
-    // no budget spent
-    expect((await admin('GET', '/api/admin/searches')).json()).toMatchObject({
-      guests: 0,
-      owner: 1,
-    });
-
-    const req = await g.request(vid(1));
-    expect(req.statusCode).toBe(201);
-    expect(hub.app.jukebox.session.state.nowPlaying?.videoId).toBe(vid(1));
-  });
-
-  it('no key + fallback on → unofficial directly, trusting the page', async () => {
-    await admin('PATCH', '/api/admin/settings', { youtubeApiKey: null });
-    const g = new Guest(hub.app);
-    expect(await state(g)).toEqual({
-      enabled: true,
-      remaining: null,
-      low: false,
-      provider: 'unofficial',
-    });
-    const res = await search(g, 'party');
-    expect(res.statusCode).toBe(200);
-    const body = res.json();
-    expect(body).toMatchObject({ provider: 'unofficial', remaining: null, cached: false });
-    expect(hub.yt.count('videos')).toBe(0);
-    expect(body.results[0]).toMatchObject({
-      videoId: vid(1),
-      title: 'Page: Good song',
-      durationSec: 210,
-      playable: true,
-    });
-    // page length still meets the owner's limit; no embeddable info without a key
-    expect(body.results[1]).toMatchObject({ title: 'Page: No embed', playable: true });
-    expect(body.results[2]).toMatchObject({ playable: false, reason: 'too-long' });
-    expect(body.results[3]).toMatchObject({
-      durationSec: null,
-      playable: false,
-      reason: 'live',
-      source: 'youtube',
-    });
-    const st = (await g.req({ method: 'GET', url: '/api/session' })).json() as GuestState;
-    expect(st.flags.hasApiKey).toBe(false);
-    expect((await g.request(vid(1))).statusCode).toBe(201);
-  });
-
-  it('cache hits return the stored provider without fetching', async () => {
-    await admin('PATCH', '/api/admin/settings', { youtubeApiKey: null });
-    const g = new Guest(hub.app);
-    await search(g, 'party songs');
-    hub.yt.resultsHtml = null;
-    const again = await search(g, '  PARTY songs ');
-    expect(again.statusCode).toBe(200);
-    expect(again.json()).toMatchObject({ provider: 'unofficial', cached: true, remaining: null });
-    expect(again.json().results[3]).toMatchObject({ reason: 'live', title: 'Page: Live' });
-    expect(hub.yt.count('results')).toBe(1);
-
-    // an official cache row keeps its provider even when the next miss would be unofficial
-    await admin('PATCH', '/api/admin/settings', { youtubeApiKey: 'AIzaTESTKEY1234' });
-    hub.clock.advance(60_000); // past the per-guest search interval
-    expect((await search(g, 'official')).json().provider).toBe('youtube-api');
-    await exhaustGuests();
-    const hit = await search(g, 'official');
-    expect(hit.json()).toMatchObject({ provider: 'youtube-api', cached: true, remaining: 0 });
-    expect(hub.yt.count('search')).toBe(1);
-    expect(hub.yt.count('results')).toBe(1);
-  });
-
-  it('fallback off → 429 / 503 as before', async () => {
-    await exhaustGuests({ search: { unofficialFallback: false } });
-    const g = new Guest(hub.app);
-    expect(await state(g)).toEqual({
-      enabled: false,
-      remaining: 0,
-      low: true,
-      provider: 'youtube-api',
-    });
-    const blocked = await search(g, 'x');
-    expect(blocked.statusCode).toBe(429);
-    expect(blocked.json().error.code).toBe('search-budget');
-
-    await admin('PATCH', '/api/admin/settings', { youtubeApiKey: null });
-    expect(await state(g)).toEqual({ enabled: false, remaining: null, low: false });
-    const off = await search(g, 'x');
-    expect(off.statusCode).toBe(503);
-    expect(off.json().error.code).toBe('search-disabled');
-    expect(hub.yt.count('results')).toBe(0);
+    expect(off.json().search).toEqual({ source: 'api-only' });
   });
 
   it.each([
-    ['consent page', CONSENT_PAGE],
-    ['empty results', EMPTY_PAGE],
-  ])('%s → 502 youtube-unavailable', async (_name, body) => {
-    await exhaustGuests();
-    hub.yt.resultsHtml = body;
-    const res = await search(new Guest(hub.app), 'x');
-    expect(res.statusCode).toBe(502);
-    expect(res.json().error.code).toBe('youtube-unavailable');
+    ['unofficialFallback false', { unofficialFallback: false }, 'api-only'],
+    ['unofficialFallback true (the old default)', { unofficialFallback: true }, 'page'],
+    ['no search key (pre-0.0.5)', undefined, 'page'],
+  ])('migrates a stored %s to source %s', async (_name, stored, source) => {
+    await storeSearch(stored);
+    expect((await admin('GET', '/api/admin/settings')).json().search).toEqual({ source });
+    const db = new DatabaseSync(join(hub.dataDir, 'data.db'), { readOnly: true });
+    try {
+      const row = db.prepare('SELECT data FROM settings WHERE id = 1').get() as { data: string };
+      expect(JSON.parse(row.data).search).toEqual({ source });
+    } finally {
+      db.close();
+    }
   });
 
-  it('the per-guest interval still answers 429 on the fallback path', async () => {
-    await admin('PATCH', '/api/admin/settings', {
-      youtubeApiKey: null,
-      limits: {
-        maxPendingPerGuest: 5,
-        cooldownSec: 5,
-        allowDuplicates: true,
-        maxDurationSec: 480,
-        search: {
-          perGuestPerDay: 10,
-          perGuestIntervalSec: 5,
-          perIpPerDay: 10,
-          publicPerDay: 20,
-          ownerReserve: 1,
-          dailyTotal: 1,
-        },
-      },
+  describe('page (default)', () => {
+    it('guests and the owner read the results page even with a key; no search quota is spent', async () => {
+      const g = new Guest(hub.app);
+      await g.hello();
+      expect(await state(g)).toEqual({
+        enabled: true,
+        remaining: null,
+        low: false,
+        provider: 'unofficial',
+      });
+      const res = await search(g, 'party');
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body).toMatchObject({ provider: 'unofficial', remaining: null, cached: false });
+      expect(hub.yt.count('search')).toBe(0);
+      expect(hub.yt.count('results')).toBe(1);
+      // pre-screened with videos.list because a key exists
+      expect(hub.yt.count('videos')).toBe(1);
+      expect(body.results[0]).toMatchObject({ title: 'Good song', playable: true });
+      expect(body.results[1]).toMatchObject({ playable: false, reason: 'not-embeddable' });
+
+      const owner = await admin('POST', '/api/admin/search', { q: 'owner pick' });
+      expect(owner.json()).toMatchObject({ provider: 'unofficial', remaining: null });
+      expect(hub.yt.count('search')).toBe(0);
+      expect((await admin('GET', '/api/admin/searches')).json()).toMatchObject({
+        guests: 80,
+        owner: 100,
+      });
+      expect((await admin('GET', '/api/admin/session')).json().search).toEqual({
+        enabled: true,
+        remaining: null,
+        low: false,
+        provider: 'unofficial',
+      });
     });
-    const g = new Guest(hub.app);
-    expect((await search(g, 'one')).statusCode).toBe(200);
-    const wait = await search(g, 'two');
-    expect(wait.statusCode).toBe(429);
-    expect(wait.json().error).toMatchObject({ code: 'search-budget', retryAfterSec: 5 });
-    expect(wait.headers['retry-after']).toBe('5');
-    hub.clock.advance(5000);
-    expect((await search(g, 'two')).statusCode).toBe(200);
+
+    it('caches 24 h as unofficial and keeps the per-guest interval', async () => {
+      const g = new Guest(hub.app);
+      expect((await search(g, 'Party')).statusCode).toBe(200);
+      const hit = await search(g, ' party ');
+      expect(hit.json()).toMatchObject({ provider: 'unofficial', cached: true });
+      const wait = await search(g, 'other');
+      expect(wait.statusCode).toBe(429);
+      expect(wait.json().error.code).toBe('search-budget');
+      hub.clock.advance(15_000);
+      expect((await search(g, 'other')).statusCode).toBe(200);
+      expect(hub.yt.count('results')).toBe(2);
+      hub.clock.advance(24 * 60 * 60 * 1000);
+      expect((await search(g, 'party')).json().cached).toBe(false);
+    });
   });
 
-  it("YouTube's quotaExceeded falls back when the toggle is on", async () => {
-    hub.yt.quotaExceeded = true;
-    const res = await search(new Guest(hub.app), 'x');
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toMatchObject({ provider: 'unofficial', remaining: null });
-    expect((await admin('GET', '/api/admin/searches')).json().owner).toBe(0);
-  });
+  describe('api-first and api-only', () => {
+    beforeEach(async () => {
+      await admin('PATCH', '/api/admin/settings', { search: { source: 'api-first' } });
+    });
 
-  it('owner search uses the reserve, then falls back', async () => {
-    await exhaustGuests();
-    const first = await admin('POST', '/api/admin/search', { q: 'owner pick' });
-    expect(first.json()).toMatchObject({ provider: 'youtube-api', remaining: 0 });
-    expect(hub.yt.count('search')).toBe(1);
-    const second = await admin('POST', '/api/admin/search', { q: 'owner pick 2' });
-    expect(second.statusCode).toBe(200);
-    expect(second.json()).toMatchObject({ provider: 'unofficial', remaining: null });
-    expect(hub.yt.count('search')).toBe(1);
+    it('official mode: provider youtube-api with the remaining count', async () => {
+      const g = new Guest(hub.app);
+      await g.hello();
+      expect(await state(g)).toEqual({
+        enabled: true,
+        remaining: 10,
+        low: true,
+        provider: 'youtube-api',
+      });
+      const res = await search(g, 'party');
+      expect(res.json()).toMatchObject({ provider: 'youtube-api', cached: false, remaining: 9 });
+      // the owner/admin view (no guest) shows the guests' shared remainder
+      expect((await admin('GET', '/api/admin/session')).json().search).toEqual({
+        enabled: true,
+        remaining: 79,
+        low: false,
+        provider: 'youtube-api',
+      });
+      expect(hub.yt.count('results')).toBe(0);
+    });
 
-    await admin('PATCH', '/api/admin/settings', { search: { unofficialFallback: false } });
-    const off = await admin('POST', '/api/admin/search', { q: 'owner pick 3' });
-    expect(off.statusCode).toBe(429);
-    expect(off.json().error.code).toBe('daily-quota');
+    it('budget exhausted → unofficial results, pre-screened with videos.list; requests still work', async () => {
+      await exhaustGuests();
+      const g = new Guest(hub.app);
+      await g.hello();
+      expect(await state(g)).toEqual({
+        enabled: true,
+        remaining: null,
+        low: false,
+        provider: 'unofficial',
+      });
+      const res = await search(g, 'Party  Songs');
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body).toMatchObject({ provider: 'unofficial', remaining: null, cached: false });
+      expect(hub.yt.count('search')).toBe(0);
+      expect(hub.yt.count('results')).toBe(1);
+      expect(hub.yt.count('videos')).toBe(1);
+      expect(body.results.map((r: { videoId: string }) => r.videoId)).toEqual(
+        [1, 4, 7, 8].map(vid),
+      );
+      // videos.list rows win over the page: titles, embeddable, length, live
+      expect(body.results[0]).toMatchObject({ title: 'Good song', playable: true });
+      expect(body.results[1]).toMatchObject({ playable: false, reason: 'not-embeddable' });
+      expect(body.results[2]).toMatchObject({
+        playable: false,
+        reason: 'too-long',
+        source: 'owner',
+      });
+      expect(body.results[3]).toMatchObject({ playable: false, reason: 'live' });
+      // no budget spent
+      expect((await admin('GET', '/api/admin/searches')).json()).toMatchObject({
+        guests: 0,
+        owner: 1,
+      });
+
+      const req = await g.request(vid(1));
+      expect(req.statusCode).toBe(201);
+      expect(hub.app.jukebox.session.state.nowPlaying?.videoId).toBe(vid(1));
+    });
+
+    it('api-first with no key → unofficial directly, trusting the page', async () => {
+      await admin('PATCH', '/api/admin/settings', { youtubeApiKey: null });
+      const g = new Guest(hub.app);
+      expect(await state(g)).toEqual({
+        enabled: true,
+        remaining: null,
+        low: false,
+        provider: 'unofficial',
+      });
+      const res = await search(g, 'party');
+      expect(res.statusCode).toBe(200);
+      const body = res.json();
+      expect(body).toMatchObject({ provider: 'unofficial', remaining: null, cached: false });
+      expect(hub.yt.count('videos')).toBe(0);
+      expect(body.results[0]).toMatchObject({
+        videoId: vid(1),
+        title: 'Page: Good song',
+        durationSec: 210,
+        playable: true,
+      });
+      // page length still meets the owner's limit; no embeddable info without a key
+      expect(body.results[1]).toMatchObject({ title: 'Page: No embed', playable: true });
+      expect(body.results[2]).toMatchObject({ playable: false, reason: 'too-long' });
+      expect(body.results[3]).toMatchObject({
+        durationSec: null,
+        playable: false,
+        reason: 'live',
+        source: 'youtube',
+      });
+      const st = (await g.req({ method: 'GET', url: '/api/session' })).json() as GuestState;
+      expect(st.flags.hasApiKey).toBe(false);
+      expect((await g.request(vid(1))).statusCode).toBe(201);
+    });
+
+    it('cache hits return the stored provider without fetching', async () => {
+      await admin('PATCH', '/api/admin/settings', { youtubeApiKey: null });
+      const g = new Guest(hub.app);
+      await search(g, 'party songs');
+      hub.yt.resultsHtml = null;
+      const again = await search(g, '  PARTY songs ');
+      expect(again.statusCode).toBe(200);
+      expect(again.json()).toMatchObject({ provider: 'unofficial', cached: true, remaining: null });
+      expect(again.json().results[3]).toMatchObject({ reason: 'live', title: 'Page: Live' });
+      expect(hub.yt.count('results')).toBe(1);
+
+      // an official cache row keeps its provider even when the next miss would be unofficial
+      await admin('PATCH', '/api/admin/settings', { youtubeApiKey: 'AIzaTESTKEY1234' });
+      hub.clock.advance(60_000); // past the per-guest search interval
+      expect((await search(g, 'official')).json().provider).toBe('youtube-api');
+      await exhaustGuests();
+      const hit = await search(g, 'official');
+      expect(hit.json()).toMatchObject({ provider: 'youtube-api', cached: true, remaining: 0 });
+      expect(hub.yt.count('search')).toBe(1);
+      expect(hub.yt.count('results')).toBe(1);
+    });
+
+    it('api-only → 429 / 503 as before', async () => {
+      await exhaustGuests({ search: { source: 'api-only' } });
+      const g = new Guest(hub.app);
+      expect(await state(g)).toEqual({
+        enabled: false,
+        remaining: 0,
+        low: true,
+        provider: 'youtube-api',
+      });
+      const blocked = await search(g, 'x');
+      expect(blocked.statusCode).toBe(429);
+      expect(blocked.json().error.code).toBe('search-budget');
+
+      await admin('PATCH', '/api/admin/settings', { youtubeApiKey: null });
+      expect(await state(g)).toEqual({ enabled: false, remaining: null, low: false });
+      const off = await search(g, 'x');
+      expect(off.statusCode).toBe(503);
+      expect(off.json().error.code).toBe('search-disabled');
+      expect(hub.yt.count('results')).toBe(0);
+    });
+
+    it.each([
+      ['consent page', CONSENT_PAGE],
+      ['empty results', EMPTY_PAGE],
+    ])('%s → 502 youtube-unavailable', async (_name, body) => {
+      await exhaustGuests();
+      hub.yt.resultsHtml = body;
+      const res = await search(new Guest(hub.app), 'x');
+      expect(res.statusCode).toBe(502);
+      expect(res.json().error.code).toBe('youtube-unavailable');
+    });
+
+    it('the per-guest interval still answers 429 on the fallback path', async () => {
+      await admin('PATCH', '/api/admin/settings', {
+        youtubeApiKey: null,
+        limits: {
+          maxPendingPerGuest: 5,
+          cooldownSec: 5,
+          allowDuplicates: true,
+          maxDurationSec: 480,
+          search: {
+            perGuestPerDay: 10,
+            perGuestIntervalSec: 5,
+            perIpPerDay: 10,
+            publicPerDay: 20,
+            ownerReserve: 1,
+            dailyTotal: 1,
+          },
+        },
+      });
+      const g = new Guest(hub.app);
+      expect((await search(g, 'one')).statusCode).toBe(200);
+      const wait = await search(g, 'two');
+      expect(wait.statusCode).toBe(429);
+      expect(wait.json().error).toMatchObject({ code: 'search-budget', retryAfterSec: 5 });
+      expect(wait.headers['retry-after']).toBe('5');
+      hub.clock.advance(5000);
+      expect((await search(g, 'two')).statusCode).toBe(200);
+    });
+
+    it("YouTube's quotaExceeded falls back on api-first", async () => {
+      hub.yt.quotaExceeded = true;
+      const res = await search(new Guest(hub.app), 'x');
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ provider: 'unofficial', remaining: null });
+      expect((await admin('GET', '/api/admin/searches')).json().owner).toBe(0);
+    });
+
+    it('owner search uses the reserve, then falls back', async () => {
+      await exhaustGuests();
+      const first = await admin('POST', '/api/admin/search', { q: 'owner pick' });
+      expect(first.json()).toMatchObject({ provider: 'youtube-api', remaining: 0 });
+      expect(hub.yt.count('search')).toBe(1);
+      const second = await admin('POST', '/api/admin/search', { q: 'owner pick 2' });
+      expect(second.statusCode).toBe(200);
+      expect(second.json()).toMatchObject({ provider: 'unofficial', remaining: null });
+      expect(hub.yt.count('search')).toBe(1);
+
+      await admin('PATCH', '/api/admin/settings', { search: { source: 'api-only' } });
+      const off = await admin('POST', '/api/admin/search', { q: 'owner pick 3' });
+      expect(off.statusCode).toBe(429);
+      expect(off.json().error.code).toBe('daily-quota');
+    });
   });
 });

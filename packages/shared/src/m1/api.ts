@@ -78,6 +78,10 @@ export const SearchReplySchema = z.object({
 });
 export type SearchReply = z.infer<typeof SearchReplySchema>;
 
+/** `GET /api/search/suggest?q=`: YouTube's typing suggestions (at most 10; empty on failure). */
+export const SuggestReplySchema = z.object({ suggestions: z.array(z.string()).max(10) });
+export type SuggestReply = z.infer<typeof SuggestReplySchema>;
+
 export const LoginBodySchema = z.object({ password: z.string().min(1) });
 export type LoginBody = z.infer<typeof LoginBodySchema>;
 export const LoginReplySchema = z.object({ ok: z.literal(true), token: z.string().optional() });

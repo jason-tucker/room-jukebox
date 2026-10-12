@@ -10,7 +10,7 @@ import type {
   SkipReason,
 } from '@room-jukebox/core';
 import { emptySearchUsage } from '@room-jukebox/core';
-import type { SearchProvider, VideoCard } from '@room-jukebox/shared';
+import type { SearchProvider, SearchSource, VideoCard } from '@room-jukebox/shared';
 import type { SQLOutputValue } from 'node:sqlite';
 import type { Db } from './index.ts';
 import { transaction } from './index.ts';
@@ -51,8 +51,11 @@ export interface SettingsData {
   hubEpoch: number;
   /** Owner's QR address override (`PATCH /api/admin/lan`). */
   lanChosen: string | null;
-  /** Absent in rows written before the search fallback existed (read as the defaults). */
-  search?: { unofficialFallback: boolean };
+  /**
+   * Absent in rows written before 0.0.5; `unofficialFallback` only in 0.0.5 rows (migrated to
+   * `source` when the settings service starts).
+   */
+  search?: { source?: SearchSource; unofficialFallback?: boolean };
 }
 
 export interface SettingsRow {

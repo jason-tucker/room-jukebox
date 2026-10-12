@@ -1,21 +1,33 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { DEFAULT_COUNTRY, DEFAULT_LIMITS, INITIAL_HUB_EPOCH } from '@room-jukebox/core';
-import type { PlaylistInfo, SettingsPatch, SettingsPublic } from '@room-jukebox/shared';
-import { z } from 'zod';
+import type {
+  PlaylistInfo,
+  SearchSource,
+  SettingsPatch,
+  SettingsPublic,
+} from '@room-jukebox/shared';
 import type { PlaylistRow, Repos, SettingsData, SettingsRow } from './db/repo.ts';
 
-/**
- * Server-side settings not yet in the shared contract (`SettingsPatch`/`SettingsPublic`): parsed
- * from the PATCH body beside `SettingsPatchSchema` (which strips them) and echoed as extra keys.
- */
-export const SettingsPatchExtSchema = z.object({
-  search: z.object({ unofficialFallback: z.boolean().optional() }).optional(),
-});
-export type SettingsPatchExt = z.infer<typeof SettingsPatchExtSchema>;
-export type SettingsPublicExt = SettingsPublic & { search: { unofficialFallback: boolean } };
+/** `SettingsPublic` as this server always sends it (`search` is optional in the contract). */
+export type SettingsPublicExt = SettingsPublic & { search: { source: SearchSource } };
 
-/** The results-page search fallback is on unless the owner turns it off. */
-export const DEFAULT_UNOFFICIAL_FALLBACK = true;
+/** Search reads YouTube's results page unless the owner picks the Data API. */
+export const DEFAULT_SEARCH_SOURCE: SearchSource = 'page';
+
+/** The pre-0.0.6 PATCH boolean: on = API then page, off = API only. */
+export const sourceFromLegacyFallback = (on: boolean): SearchSource =>
+  on ? 'api-first' : 'api-only';
+
+/**
+ * The stored source. 0.0.5 rows carry only `unofficialFallback`: `false` was an explicit owner
+ * choice (→ `api-only`); `true` was the default, so it takes the new default (`page`).
+ */
+export function storedSearchSource(data: SettingsData): SearchSource {
+  const s = data.search;
+  if (s?.source !== undefined) return s.source;
+  if (s?.unofficialFallback === false) return 'api-only';
+  return DEFAULT_SEARCH_SOURCE;
+}
 
 /** At-rest encryption for secrets (the desktop passes Electron safeStorage; standalone = identity). */
 export interface Secrets {
@@ -40,7 +52,7 @@ export function defaultSettingsData(): SettingsData {
     hubId: randomUUID(),
     hubEpoch: INITIAL_HUB_EPOCH,
     lanChosen: null,
-    search: { unofficialFallback: DEFAULT_UNOFFICIAL_FALLBACK },
+    search: { source: DEFAULT_SEARCH_SOURCE },
   };
 }
 
@@ -66,8 +78,15 @@ export class SettingsService {
     this.#repos = repos;
     this.#secrets = secrets;
     this.#now = now;
-    if (repos.settings.get() === null) {
+    const existing = repos.settings.get();
+    if (existing === null) {
       repos.settings.create(defaultSettingsData(), randomBytes(32).toString('base64url'), now());
+    } else if (existing.data.search?.source === undefined) {
+      // Migrate pre-0.0.6 rows to `search.source`.
+      repos.settings.setData(
+        { ...existing.data, search: { source: storedSearchSource(existing.data) } },
+        now(),
+      );
     }
   }
 
@@ -93,9 +112,9 @@ export class SettingsService {
     }
   }
 
-  /** Whether search may fall back to YouTube's public results page. */
-  unofficialFallback(): boolean {
-    return this.data().search?.unofficialFallback ?? DEFAULT_UNOFFICIAL_FALLBACK;
+  /** Where search goes (`page`, `api-first` or `api-only`). */
+  searchSource(): SearchSource {
+    return storedSearchSource(this.data());
   }
 
   wifiPassword(): string | null {
@@ -151,16 +170,16 @@ export class SettingsService {
       publicMode: d.publicMode,
       hubId: d.hubId,
       hubEpoch: d.hubEpoch,
-      search: { unofficialFallback: this.unofficialFallback() },
+      search: { source: this.searchSource() },
     };
   }
 
   /**
    * Applies a PATCH. Read-only fields (`hubId`, `hubEpoch`, `fallbackPlaylists`, the `has*` flags
-   * and `apiKeyLast4`) are ignored; secrets are encrypted and never echoed. `ext` carries the
-   * server-side extras (`search.unofficialFallback`).
+   * and `apiKeyLast4`) are ignored; secrets are encrypted and never echoed. `search` takes
+   * `{ source }` or the legacy `{ unofficialFallback }` boolean.
    */
-  patch(p: SettingsPatch, ext: SettingsPatchExt = {}): SettingsPublicExt {
+  patch(p: SettingsPatch): SettingsPublicExt {
     const d = { ...this.data() };
     if (p.roomName !== undefined) d.roomName = p.roomName;
     if (p.lanPort !== undefined) d.lanPort = p.lanPort;
@@ -172,8 +191,13 @@ export class SettingsService {
     if (p.autoFullscreen !== undefined) d.autoFullscreen = p.autoFullscreen;
     if (p.kiosk !== undefined) d.kiosk = p.kiosk;
     if (p.publicMode !== undefined) d.publicMode = p.publicMode;
-    if (ext.search?.unofficialFallback !== undefined) {
-      d.search = { ...d.search, unofficialFallback: ext.search.unofficialFallback };
+    if (p.search !== undefined) {
+      d.search = {
+        source:
+          'source' in p.search
+            ? p.search.source
+            : sourceFromLegacyFallback(p.search.unofficialFallback),
+      };
     }
     this.setData(d);
     if (p.youtubeApiKey !== undefined) this.setApiKey(p.youtubeApiKey);

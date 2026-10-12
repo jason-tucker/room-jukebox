@@ -4,6 +4,7 @@ import {
   SearchBodySchema,
   type HelloReply,
   type RequestReply,
+  type SuggestReply,
 } from '@room-jukebox/shared';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -20,6 +21,7 @@ import { extractVideoId } from '../youtube/ids.ts';
 const NameBodySchema = z.object({ name: z.string().trim().min(1).max(40).nullable() });
 const NoticeBodySchema = z.object({ accepted: z.literal(true) });
 const ResolveQuerySchema = z.object({ input: z.string().min(1).max(2000) });
+const SuggestQuerySchema = z.object({ q: z.string().max(200).default('') });
 
 /** Guest routes: open on the LAN listener (no household gate). */
 export async function registerGuestRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
@@ -112,6 +114,16 @@ export async function registerGuestRoutes(app: FastifyInstance, ctx: AppContext)
     // A cache miss spent budget: everyone's "searches left" changed.
     if (!result.cached) ctx.session.touch();
     return result;
+  });
+
+  // YouTube's typing suggestions (no quota). Fails soft to an empty list; 204 when this source
+  // asked less than 300 ms ago.
+  app.get('/api/search/suggest', async (request, reply) => {
+    const { q } = parse(SuggestQuerySchema, request.query);
+    const suggestions = await ctx.suggest.suggest(q, sourceIp(request));
+    if (suggestions === null) return reply.code(204).send();
+    const out: SuggestReply = { suggestions };
+    return out;
   });
 
   app.get('/api/privacy.json', async () => PRIVACY_POLICY);

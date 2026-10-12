@@ -121,6 +121,22 @@ describe('state', () => {
     expect(SettingsPatchSchema.safeParse({ youtubeApiKey: null }).success).toBe(true);
     expect(SettingsPatchSchema.safeParse({ lanPort: 'x' }).success).toBe(false);
   });
+  it('SettingsPatch search accepts a source or the legacy boolean', () => {
+    expect(SettingsPatchSchema.parse({ search: { source: 'page' } }).search).toEqual({
+      source: 'page',
+    });
+    expect(SettingsPatchSchema.parse({ search: { unofficialFallback: false } }).search).toEqual({
+      unofficialFallback: false,
+    });
+    expect(SettingsPatchSchema.safeParse({ search: { source: 'web' } }).success).toBe(false);
+    expect(SettingsPatchSchema.safeParse({ search: {} }).success).toBe(false);
+  });
+  it('SettingsPublic search carries the source', () => {
+    expect(
+      AdminStateSchema.shape.settings.safeParse({ ...settings, search: { source: 'api-first' } })
+        .success,
+    ).toBe(true);
+  });
 });
 
 describe('ws', () => {
