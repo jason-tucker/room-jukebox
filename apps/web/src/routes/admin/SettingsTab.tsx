@@ -1,4 +1,4 @@
-import type { LanReply, Limits, SettingsPatch } from '@room-jukebox/shared';
+import type { LanReply, Limits, SearchSource, SettingsPatch } from '@room-jukebox/shared';
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { btn, Field, input, Section } from '../../components/ui.tsx';
 import { api } from '../../lib/api.ts';
@@ -10,7 +10,7 @@ export function SettingsTab(props: TabProps) {
     <>
       <RoomName {...props} />
       <LimitsForm {...props} />
-      <SearchFallback {...props} />
+      <SearchSourceForm {...props} />
       <WifiForm {...props} />
       <LanPicker {...props} />
       <ApiKey {...props} />
@@ -187,29 +187,49 @@ function LimitsForm({ state, run }: TabProps) {
   );
 }
 
-export function SearchFallback({ state, run }: TabProps) {
-  const saved = state.settings.search?.unofficialFallback ?? true;
-  const [on, setOn] = useState(saved);
+const SEARCH_SOURCES: SearchSource[] = ['page', 'api-first', 'api-only'];
+
+export function SearchSourceForm({ state, run }: TabProps) {
+  const saved: SearchSource = state.settings.search?.source ?? 'page';
+  const [source, setSource] = useState<SearchSource>(saved);
   const { busy, patch } = usePatch({ run });
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    void patch({ search: { unofficialFallback: on } });
+    void patch({ search: { source } });
   };
   return (
-    <Section title={S.admin.searchFallback}>
+    <Section title={S.admin.searchSource}>
       <form onSubmit={submit} className="flex flex-col gap-3">
-        <label className="flex min-h-11 items-center gap-3 text-base">
-          <input
-            type="checkbox"
-            role="switch"
-            className="size-6 accent-[var(--rj-accent)]"
-            checked={on}
-            onChange={(e) => setOn(e.target.checked)}
-          />
-          {S.admin.unofficialFallback}
-        </label>
-        <p className="text-base text-muted">{S.admin.unofficialFallbackHint}</p>
-        <SaveRow busy={busy} disabled={on === saved} />
+        <fieldset className="flex flex-col gap-3">
+          <legend className="sr-only">{S.admin.searchSource}</legend>
+          {SEARCH_SOURCES.map((value) => {
+            const text = S.admin.searchSources[value];
+            const id = `search-source-${value}`;
+            return (
+              <label key={value} className="flex items-start gap-3 text-base">
+                <input
+                  type="radio"
+                  name="search-source"
+                  value={value}
+                  className="mt-0.5 size-6 shrink-0 accent-[var(--rj-accent)]"
+                  checked={source === value}
+                  aria-labelledby={`${id}-label`}
+                  aria-describedby={`${id}-hint`}
+                  onChange={() => setSource(value)}
+                />
+                <span className="flex flex-col">
+                  <span id={`${id}-label`} className="font-semibold">
+                    {text.label}
+                  </span>
+                  <span id={`${id}-hint`} className="text-muted">
+                    {text.hint}
+                  </span>
+                </span>
+              </label>
+            );
+          })}
+        </fieldset>
+        <SaveRow busy={busy} disabled={source === saved} />
       </form>
     </Section>
   );

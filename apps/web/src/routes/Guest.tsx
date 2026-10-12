@@ -255,6 +255,7 @@ export function Guest() {
           <SearchBox
             search={state.search}
             runSearch={api.guest.search}
+            suggest={api.guest.suggest}
             onPick={flow.open}
             onViewChange={onSearchView}
             ctx={ctx}

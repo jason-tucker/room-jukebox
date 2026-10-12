@@ -119,7 +119,7 @@ export const S = {
     searching: 'Searching…',
     results: 'Search results',
     clear: 'Clear',
-    unofficial: "Results via YouTube's public page",
+    suggestions: 'Suggestions',
     resting: 'Search is resting for today; paste a link instead',
     youtubeDown: "YouTube didn't answer, try again",
     low: 'Search is almost used up for today. Paste link always works.',
@@ -239,6 +239,8 @@ export const S = {
     noPlaylists: 'No playlists yet.',
     ownerSearch: 'Search from the owner reserve',
     ownerSearchHint: 'Uses the searches kept back for you, not the guests’ share.',
+    ownerSearchPage: 'Search YouTube',
+    ownerSearchPageHint: 'Reads YouTube’s results page; no daily searches are used.',
     searchesLeft: 'Searches today',
     searchesUsed: (guests: number, owner: number) => `Guests used ${guests}, you used ${owner}`,
     searchesTotal: (left: number, total: number) => `${left} of ${total} left`,
@@ -266,11 +268,21 @@ export const S = {
     publicPerDay: 'Searches from the public page per day',
     ownerReserve: 'Kept back for the owner',
     dailyTotal: 'Total searches per day',
-    searchFallback: 'Search fallback',
-    unofficialFallback:
-      'When the daily search allowance is used up, read YouTube’s public results page',
-    unofficialFallbackHint:
-      'Not covered by the YouTube API terms and may stop working if YouTube changes its page. Off means search stops when the allowance is gone.',
+    searchSource: 'Search source',
+    searchSources: {
+      page: {
+        label: 'YouTube page (unlimited)',
+        hint: 'Reads YouTube’s public results page, like a browser. No daily limit and no API key needed. Not covered by the YouTube API terms; it can break if YouTube changes its page.',
+      },
+      'api-first': {
+        label: 'API first, then page',
+        hint: 'Uses your API key’s daily searches, then YouTube’s page once they are gone.',
+      },
+      'api-only': {
+        label: 'API only (about 100 a day)',
+        hint: 'Only the official YouTube API. Search stops for the day when the allowance runs out, and is off without a key.',
+      },
+    },
     wifi: 'Wi-Fi QR on the TV',
     wifiHint: 'Guests scan it to join the Wi-Fi. Leave the name empty to hide it.',
     ssid: 'Wi-Fi name',
@@ -284,7 +296,8 @@ export const S = {
     lanHint: 'Pick the address phones on the party Wi-Fi can reach.',
     apiKey: 'YouTube API key',
     apiKeySaved: (last4: string) => `A key ending in ${last4} is saved.`,
-    apiKeyNone: 'No key saved. Search and playlist import are off.',
+    apiKeyNone: 'No key saved. Playlist import is off; search reads YouTube’s page.',
+    apiOnlyNoKey: 'Search is set to API only and no key is saved, so search is off.',
     apiKeyPlaceholder: 'Paste a new key',
     removeApiKey: 'Remove key',
     backup: 'Backups',
@@ -320,7 +333,7 @@ export const S = {
     roomNamePlaceholder: 'Basement',
     apiKey: 'YouTube API key (optional)',
     apiKeyBody:
-      'Without a key, guests still request songs with Find on YouTube and Paste link. A key adds an in-page search box and fallback playlist import. YouTube allows about 100 searches a day for the whole app.',
+      'Without a key, guests still search (through YouTube’s results page) and paste links. A key adds fallback playlist import and checks each search result before it can be requested.',
     apiKeyStepsTitle: 'How to get a key (5 minutes)',
     apiKeySteps: [
       'Open the Google Cloud console and sign in.',

@@ -106,11 +106,13 @@ follows the phone's light or dark setting.
 
 1. The first visit shows a short notice (YouTube Terms of Service and the Room Jukebox privacy
    policy). Tap **Continue**; the phone remembers it.
-2. Type a song or artist into **Search YouTube for a song** at the top and tap **Search** (or press
-   Enter). Results appear in YouTube's order, thumbnail on the left. Songs that cannot play here
-   (too long for this room, age-restricted, not allowed outside YouTube, live, private) stay in the
-   list, greyed, with the reason in plain words, and cannot be tapped.
-3. Tap a result. The **Request this song?** card shows the title, length and whether it can play;
+2. Type a song or artist into **Search YouTube for a song** at the top. As you type, suggestions
+   drop down under the box like on YouTube; tap one (or pick it with the arrow keys and Enter), or
+   finish typing and tap **Search** (or press Enter).
+3. Results appear in YouTube's order, thumbnail on the left. Songs that cannot play here (too long
+   for this room, age-restricted, not allowed outside YouTube, live, private) stay in the list,
+   greyed, with the reason in plain words, and cannot be tapped.
+4. Tap a result. The **Request this song?** card shows the title, length and whether it can play;
    tap **Request it**. A short "Added: …" message confirms it, and the results stay so you can add
    another one.
 
@@ -119,9 +121,8 @@ m.youtube.com opens), then in YouTube **Share → Copy link**, come back and tap
 the phone refuses to let the page read the clipboard (some browsers on plain `http://`), paste the
 link into the box under **Paste link** instead. When search is turned off this section comes first
 ("Search is off; paste a link instead"); when search is resting for the day it moves right under
-the search box. A small banner warns when today's searches are almost used up. When the jukebox
-answers searches from YouTube's public page instead of the API, a quiet line under the box says
-"Results via YouTube's public page".
+the search box. When the owner has switched search to the YouTube API (admin → Settings → **Search
+source**), a small banner warns when today's searches are almost used up.
 
 Under the results come Now Playing and the live queue (your own requests are highlighted); while
 results are on screen they fold into a small **Now playing: …** bar at the bottom, tap it to open
@@ -133,9 +134,11 @@ Owner pages: `/admin` on a phone (password), `/setup` on the hub laptop at first
 for everyone. The M0 diagnostics pages stay at `/spike` and `/tv-spike`.
 
 For web development without a server, `VITE_MOCK=1 pnpm --filter web dev` runs the pages against an
-in-browser mock hub (`apps/web/src/dev/mock.ts`; owner password `jukebox1`, `/setup?mocksetup=1`). Search words flip
-the mock's modes: `quota` (answers via the unofficial provider from then on), `budget`, `down`,
-`off` (guest search off until reload), `low`, `zero`.
+in-browser mock hub (`apps/web/src/dev/mock.ts`; owner password `jukebox1`, `/setup?mocksetup=1`). The mock
+starts on the YouTube-page search source and suggests completions for any 2+ characters. Search
+words flip the mock's modes: `budget`, `down`, `off` (guest search off until reload), and, after
+picking an API source in Settings, `quota` (answers via the results page from then on), `low`,
+`zero`.
 
 ## Troubleshooting
 
@@ -149,21 +152,34 @@ Windows, `DATA_DIR` or `./data` standalone), with nightly 04:00 backups in `back
 | _Too many wrong passwords_                         | 5 failed logins from one device; each further failure doubles the wait (max 15 min)                                   | Wait the time shown, then sign in; a correct password resets the counter                                                                                  |
 | Signed out on every device                         | The owner password was changed (every session is invalidated) or the 12 h session expired                             | Sign in again; the desktop's own token is renewed by the app                                                                                              |
 | `/setup` answers 409                               | A password already exists                                                                                             | Use `/admin`; to start over, quit the app and delete `data.db` (a backup is in `backups\`)                                                                |
-| Search box missing on phones                       | No API key, or today's search budget is used up (resets at midnight Pacific), and the search fallback is off          | Add the key in settings; guests can always use _Find on YouTube_ + _Paste link_                                                                           |
+| Search box missing on phones                       | Search source is _API only_ and there is no API key, or today's API budget is used up (resets at midnight Pacific)    | Admin → Settings → Search source: _YouTube page (unlimited)_, or add the key; guests can always use _Find on YouTube_ + _Paste link_                      |
+| Search says _YouTube search is not answering_      | YouTube's results page did not answer or changed its layout (502 `youtube-unavailable`)                               | Try again in a minute; if it persists, switch Search source to _API first, then page_ (needs a key); paste-a-link keeps working                           |
+| No suggestions under the search box                | YouTube's suggest service did not answer (suggestions fail quietly), or fewer than 2 characters typed                 | Nothing to fix: tap **Search** to search what you typed                                                                                                   |
 | "Several videos in a row failed" on the TV         | 5 consecutive fallback videos failed (removed, private, embedding off)                                                | Press _Start Music_ or play from admin; check _Last errors_ in admin and refresh or replace the fallback playlist                                         |
 | TV shows _Reconnecting_ after the app restarted    | The TV window reconnects within 10 s; otherwise the interrupted song is restarted once, then skipped on a 2nd restart | Wait a few seconds; if it stays, reload the TV window                                                                                                     |
 | QR code points at the wrong address                | The laptop has several adapters (VPN, Docker, VirtualBox)                                                             | Admin → LAN: choose the Wi-Fi address                                                                                                                     |
 | Restore a backup by hand (M1)                      | Settings or queue lost                                                                                                | Quit the app, copy a file from `backups\` over `data.db`, delete `data.db-wal` and `data.db-shm`, start the app (the API key needs the same Windows user) |
 
-**Search fallback (unofficial).** Search uses the official YouTube Data API first. Once today's
-search budget is used up (or when no API key is set), the hub instead reads YouTube's public
-results page (`youtube.com/results`) and shows those videos, labelled as coming from the fallback.
-This is not an official API: it is against YouTube's terms of service, and it can stop working
-without notice whenever YouTube changes that page; then search answers _YouTube search is not
-answering right now_ (502 `youtube-unavailable`) while paste-a-link keeps working. Fallback results
-are cached for 24 h like API results. To turn it off, set `search.unofficialFallback` to `false` in
-the settings (`PATCH /api/admin/settings` with `{"search": {"unofficialFallback": false}}`); search
-then stops at the daily budget as before.
+**Search source.** Admin → Settings → **Search source** picks where search goes
+(`search.source` in `PATCH /api/admin/settings`):
+
+- **YouTube page (unlimited)** (`page`, the default): the hub reads YouTube's public results page
+  (`youtube.com/results`) for every search, guests and owner alike. No daily limit and no API key
+  needed; the API key, when present, is still used to check each result (`videos.list`) and for
+  playlist import, but never for search.
+- **API first, then page** (`api-first`): the official YouTube Data API while today's budget lasts,
+  then the results page (also when no key is set or YouTube reports `quotaExceeded`).
+- **API only (about 100 a day)** (`api-only`): the Data API with no fallback; search stops at the
+  daily budget and is off without a key.
+
+Typing suggestions always come from YouTube's suggest service (`GET /api/search/suggest`, no
+quota). The results and suggest pages are not official APIs: they can stop working without notice
+whenever YouTube changes them; then search answers _YouTube search is not answering right now_
+(502 `youtube-unavailable`) and suggestions simply stop appearing, while paste-a-link keeps working.
+Results from either source are cached for 24 h, and the per-guest time between searches still
+applies. Older clients may still send `{"search": {"unofficialFallback": true|false}}`, which maps
+to `api-first` / `api-only`; settings saved by 0.0.5 are migrated on start (an explicit "off"
+becomes `api-only`, everything else the new default `page`).
 
 ### M0 spike pages (temporary)
 
@@ -241,20 +257,23 @@ Electron itself (windows, displays, firewall, autoplay) cannot be exercised in t
 
 ## YouTube API terms and privacy
 
-Room Jukebox plays music through the official YouTube embedded player and searches through the
-YouTube Data API. By using it you agree to the
-[YouTube Terms of Service](https://www.youtube.com/t/terms) and the
+Room Jukebox plays music through the official YouTube embedded player. By using it you agree to
+the [YouTube Terms of Service](https://www.youtube.com/t/terms) and the
 [Google Privacy Policy](https://policies.google.com/privacy). The app's own privacy notice is shown
 at `/privacy`. It stores only what is needed to run the party on the owner's laptop (the queue,
 request names guests choose to type, and settings); nothing is sent anywhere other than YouTube.
-Each owner supplies their own YouTube API key; keys are never committed to this repository.
+Each owner supplies their own YouTube API key (optional); keys are never committed to this
+repository.
 
-**Search fallback.** The Data API allows about 100 searches a day per key. When that allowance is
-used up, or no key is configured, the hub can read YouTube's public search results page directly
-("Results via YouTube's public page" appears under the search box). That mode is not covered by
-the YouTube API terms, may conflict with YouTube's terms of service for automated access, and can
-stop working whenever YouTube changes its page. It is on by default; the owner can turn it off in
-the admin settings (`search.unofficialFallback`). Playback always uses the official embedded player.
+**How search works.** By default, search reads YouTube's public search results page and its
+typing suggestions directly, the same pages a browser loads; it does not use the YouTube Data API
+for search. Those pages are not covered by the YouTube API terms, reading them this way may
+conflict with YouTube's terms of service for automated access, and search can break whenever
+YouTube changes them. The owner can switch search to the official API in the admin settings
+(**Search source**: _API first, then page_ or _API only_; the API allows about 100 searches a day
+per key). With a key, the API is also used to check results before they can be requested and to
+import fallback playlists. Playback always uses the official embedded YouTube player, whichever
+search source is chosen.
 
 ## License
 

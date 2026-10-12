@@ -131,32 +131,128 @@ describe('SearchBox', () => {
     expect(onViewChange).toHaveBeenLastCalledWith({ showingResults: false, resting });
   });
 
-  it('notes the unofficial provider in one quiet line', async () => {
+  it('shows no provider note on the results-page path, and no low banner', async () => {
     render(
       <SearchBox
-        search={{ enabled: true, remaining: null, low: false, provider: 'youtube-api' }}
+        search={{ enabled: true, remaining: null, low: true, provider: 'unofficial' }}
         runSearch={() =>
           Promise.resolve({ ok: true, status: 200, data: { ...reply, provider: 'unofficial' } })
         }
         onPick={() => undefined}
       />,
     );
-    expect(screen.queryByTestId('search-provider-note')).toBeNull();
+    expect(screen.queryByText(S.search.low, { exact: false })).toBeNull();
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'q' } });
     fireEvent.submit(screen.getByRole('search'));
-    expect(await screen.findByTestId('search-provider-note')).toHaveTextContent(
-      S.search.unofficial,
-    );
+    await waitFor(() => expect(screen.getAllByTestId('search-row')).toHaveLength(3));
+    expect(screen.queryByTestId('search-provider-note')).toBeNull();
+    expect(screen.queryByText(/public page/i)).toBeNull();
   });
+});
 
-  it('shows the provider note before any search when the server says so', () => {
+describe('SearchBox suggestions', () => {
+  const words = ['queen bohemian rhapsody', 'queen we will rock you', 'queens of the stone age'];
+
+  function setup(suggest = vi.fn((_q: string, _s: AbortSignal) => Promise.resolve(words))) {
+    const run = vi.fn(ok);
     render(
       <SearchBox
         search={{ enabled: true, remaining: null, low: false, provider: 'unofficial' }}
-        runSearch={ok}
+        runSearch={run}
+        suggest={suggest}
         onPick={() => undefined}
       />,
     );
-    expect(screen.getByTestId('search-provider-note')).toBeInTheDocument();
+    return { run, suggest, box: screen.getByRole('searchbox') };
+  }
+
+  it('lists suggestions after a pause, YouTube style, and a tap searches it', async () => {
+    const { run, suggest, box } = setup();
+    fireEvent.change(box, { target: { value: 'q' } });
+    fireEvent.change(box, { target: { value: 'qu' } });
+    fireEvent.change(box, { target: { value: 'quee' } });
+    expect(suggest).not.toHaveBeenCalled();
+    const list = await screen.findByRole('listbox', { name: S.search.suggestions });
+    // debounced: one request for the last text only
+    expect(suggest).toHaveBeenCalledTimes(1);
+    expect(suggest.mock.calls[0]?.[0]).toBe('quee');
+    const options = within(list).getAllByRole('option');
+    expect(options.map((o) => o.textContent)).toEqual(words);
+    // typed part plain, completion bold, with a search icon
+    expect(options[0]!.querySelector('b')).toHaveTextContent('n bohemian rhapsody');
+    expect(options[0]!.querySelector('svg')).not.toBeNull();
+    expect(run).not.toHaveBeenCalled();
+
+    fireEvent.click(options[1]!);
+    expect(run).toHaveBeenCalledWith('queen we will rock you');
+    expect(box).toHaveValue('queen we will rock you');
+    expect(screen.queryByRole('listbox')).toBeNull();
+    await waitFor(() => expect(screen.getAllByTestId('search-row')).toHaveLength(3));
+  });
+
+  it('arrow keys move through the list and Enter searches the highlighted one', async () => {
+    const { run, box } = setup();
+    fireEvent.change(box, { target: { value: 'queen' } });
+    await screen.findByRole('listbox');
+    fireEvent.keyDown(box, { key: 'ArrowDown' });
+    fireEvent.keyDown(box, { key: 'ArrowDown' });
+    const options = screen.getAllByRole('option');
+    expect(options[1]).toHaveAttribute('aria-selected', 'true');
+    expect(box).toHaveAttribute('aria-activedescendant', options[1]!.id);
+    fireEvent.keyDown(box, { key: 'ArrowUp' });
+    fireEvent.keyDown(box, { key: 'ArrowUp' });
+    // back on the typed text, then wrap to the last
+    expect(box).not.toHaveAttribute('aria-activedescendant');
+    fireEvent.keyDown(box, { key: 'ArrowUp' });
+    expect(screen.getAllByRole('option')[2]).toHaveAttribute('aria-selected', 'true');
+    fireEvent.submit(screen.getByRole('search'));
+    expect(run).toHaveBeenCalledWith('queens of the stone age');
+    expect(screen.queryByRole('listbox')).toBeNull();
+  });
+
+  it('Enter without a highlight searches the typed text; Escape closes the list', async () => {
+    const { run, box } = setup();
+    fireEvent.change(box, { target: { value: 'queen live' } });
+    await screen.findByRole('listbox');
+    fireEvent.keyDown(box, { key: 'Escape' });
+    expect(screen.queryByRole('listbox')).toBeNull();
+    fireEvent.submit(screen.getByRole('search'));
+    expect(run).toHaveBeenCalledWith('queen live');
+  });
+
+  it('needs 2 characters, aborts stale requests and ignores late answers', async () => {
+    let release: (v: string[]) => void = () => undefined;
+    const signals: AbortSignal[] = [];
+    const suggest = vi.fn((q: string, signal: AbortSignal) => {
+      signals.push(signal);
+      return q === 'ab' ? new Promise<string[]>((r) => (release = r)) : Promise.resolve(['abc']);
+    });
+    const { box } = setup(suggest);
+    fireEvent.change(box, { target: { value: 'a' } });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(suggest).not.toHaveBeenCalled();
+    fireEvent.change(box, { target: { value: 'ab' } });
+    await waitFor(() => expect(suggest).toHaveBeenCalledTimes(1));
+    fireEvent.change(box, { target: { value: 'abc' } });
+    expect(signals[0]?.aborted).toBe(true);
+    const list = await screen.findByRole('listbox');
+    expect(
+      within(list)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['abc']);
+    release(['stale']);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByText('stale')).toBeNull();
+  });
+
+  it('a submit cancels a pending suggestion request', async () => {
+    const { run, suggest, box } = setup();
+    fireEvent.change(box, { target: { value: 'queen' } });
+    fireEvent.submit(screen.getByRole('search'));
+    expect(run).toHaveBeenCalledWith('queen');
+    await new Promise((r) => setTimeout(r, 300));
+    expect(suggest).not.toHaveBeenCalled();
+    expect(screen.queryByRole('listbox')).toBeNull();
   });
 });
