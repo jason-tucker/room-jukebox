@@ -19,7 +19,9 @@ import { desktopAdminToken } from './jukebox.ts';
  * - keeps the latest projection for its role and resyncs when it notices a missed broadcast
  *   (a heartbeat whose `changeSeq` is ahead of the last state it saw): guests and admins fetch
  *   `GET /api/session` / `GET /api/admin/session`; the player has no HTTP snapshot route in M1,
- *   so it reconnects and takes the state the server sends on connect.
+ *   so it reconnects and takes the state the server sends on connect. Those reconnects are
+ *   coalesced and rate-limited (`PLAYER_RESYNC_MIN_INTERVAL_MS`), and skipped when a `state`
+ *   catches up first, so a lagging `changeSeq` can never turn into a reconnect storm.
  */
 
 export type StateFor<R extends Role> = R extends 'admin'
@@ -37,6 +39,8 @@ export const BACKOFF_MAX_MS = 30_000;
 /** Heartbeats arrive every 5 s; a socket silent for this long is treated as dead. */
 export const SILENCE_LIMIT_MS = 15_000;
 const OFFSET_SAMPLE_WINDOW = 5;
+/** At most one resync-by-reconnect per this window for the player role. */
+export const PLAYER_RESYNC_MIN_INTERVAL_MS = 10_000;
 
 interface OffsetSample {
   t0: number;
@@ -99,6 +103,10 @@ export class SessionClient<R extends Role = Role> {
   #lastSeq: number | null = null;
   #acceptAny = true;
   #resyncing = false;
+  /** Newest `changeSeq` a heartbeat announced (player reconnect resync). */
+  #heardSeq: number | null = null;
+  #lastReconnectResyncAt: number | null = null;
+  #reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   #listeners = new Set<() => void>();
   #toastListeners = new Set<(t: Toast) => void>();
   #opts: SessionClientOptions<R>;
@@ -166,6 +174,8 @@ export class SessionClient<R extends Role = Role> {
     this.#stopped = true;
     clearTimeout(this.#retryTimer);
     clearInterval(this.#pingTimer);
+    clearTimeout(this.#reconnectTimer);
+    this.#reconnectTimer = undefined;
     const ws = this.#ws;
     this.#ws = null;
     ws?.close();
@@ -173,11 +183,11 @@ export class SessionClient<R extends Role = Role> {
 
   /** Fetches a fresh snapshot (or, for the player, reconnects). */
   async resync(countAsGap = true): Promise<void> {
-    if (countAsGap) this.resyncs += 1;
     if (!this.#snapshot) {
-      this.#ws?.close();
+      this.#reconnectResync();
       return;
     }
+    if (countAsGap) this.resyncs += 1;
     if (this.#resyncing) return;
     this.#resyncing = true;
     try {
@@ -186,6 +196,27 @@ export class SessionClient<R extends Role = Role> {
     } finally {
       this.#resyncing = false;
     }
+  }
+
+  /** Reconnect now, or once when the rate-limit window ends if a `state` has not caught up. */
+  #reconnectResync(): void {
+    if (this.#reconnectTimer !== undefined) return; // already scheduled: coalesce
+    const last = this.#lastReconnectResyncAt;
+    const wait = last === null ? 0 : last + PLAYER_RESYNC_MIN_INTERVAL_MS - Date.now();
+    if (wait <= 0) {
+      this.#lastReconnectResyncAt = Date.now();
+      this.resyncs += 1;
+      this.#ws?.close();
+      return;
+    }
+    this.#reconnectTimer = setTimeout(() => {
+      this.#reconnectTimer = undefined;
+      if (!this.#stopped && this.#behind()) this.#reconnectResync();
+    }, wait);
+  }
+
+  #behind(): boolean {
+    return this.#lastSeq === null || (this.#heardSeq !== null && this.#heardSeq > this.#lastSeq);
   }
 
   async #url(): Promise<string> {
@@ -253,6 +284,7 @@ export class SessionClient<R extends Role = Role> {
         this.#applyState(msg.state as StateFor<R>);
         return;
       case 'heartbeat':
+        this.#heardSeq = msg.changeSeq;
         if (this.#lastSeq === null || msg.changeSeq > this.#lastSeq) void this.resync();
         return;
       case 'toast':

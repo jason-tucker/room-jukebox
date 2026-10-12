@@ -328,13 +328,14 @@ export class TvPlayback {
   }
 
   #report(): void {
-    if (!this.#player || !this.ready || this.#sample.actual === null || this.#sample.ps === null) {
-      return;
-    }
+    const { actual, ps } = this.#sample;
+    // While the iframe is (re)loading, getCurrentTime()/getPlayerState() can return undefined; a
+    // report without them fails the hub's schema and gets this socket closed with `bye`.
+    if (!this.#player || !this.ready || !Number.isFinite(actual) || !Number.isInteger(ps)) return;
     this.#client.send({
       type: 'position',
-      position: this.#sample.actual,
-      playerState: this.#sample.ps,
+      position: actual as number,
+      playerState: ps as number,
       revision: Math.max(0, this.#loadedRevision),
     });
   }

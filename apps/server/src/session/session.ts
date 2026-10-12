@@ -134,8 +134,13 @@ export class Session {
   #listeners = new Set<() => void>();
   /** A fallback pick waits for a player to come online (idle policy). */
   #pendingFallback = false;
-  /** The current track started while no player was online; restart its clock on connect. */
+  /**
+   * Nobody has heard the current track in this run (it started with no player online, or it was
+   * restored from the database at boot): the first player to connect re-anchors its clock once,
+   * at `#resumeFromSec`.
+   */
   #unheard = false;
+  #resumeFromSec = 0;
   #playerSeenSinceBoot = false;
   #restartChecked = false;
   #lastPositionSave = 0;
@@ -158,6 +163,13 @@ export class Session {
     this.#meta = meta?.data ?? emptySessionData();
     this.#changeSeq = meta?.changeSeq ?? 0;
     this.#persistedHistory = history.length;
+    if (this.#state.nowPlaying !== null) {
+      // A restored track's `startedAt` is from the previous run (possibly hours ago): resume it
+      // from the last reported position when a player connects, not from a stale clock.
+      this.#unheard = true;
+      this.#resumeFromSec =
+        this.#meta.positionRevision === this.#state.revision ? this.#meta.lastPositionSec : 0;
+    }
     for (const p of deps.repos.players.list()) this.#ensurePlayer(p.deviceId, p.name);
   }
 
@@ -238,6 +250,7 @@ export class Session {
         this.#meta.accumulatedPauseMs = 0;
         this.#meta.clockRevision = eff.revision;
         this.#unheard = !this.#anyPlayerConnected();
+        this.#resumeFromSec = 0;
         for (const p of this.#players.values()) p.overCount = 0;
         this.#d.repos.events.append(
           'play',
@@ -535,11 +548,18 @@ export class Session {
     this.#playerSeenSinceBoot = true;
     const np = this.#state.nowPlaying;
     if (np !== null && this.#unheard) {
-      // Nobody heard this track yet: start its clock now instead of mid-song.
-      this.#state = { ...this.#state, nowPlaying: { ...np, startedAt: now } };
-      this.#meta.pausedAt = null;
+      // Nobody heard this track yet in this run: start its clock now (at the resume point)
+      // instead of mid-song. Once per track; reconnects and `playing` reports never move it.
+      const paused = this.#clock(np).pausedAt !== null;
+      this.#state = {
+        ...this.#state,
+        nowPlaying: { ...np, startedAt: now - Math.round(this.#resumeFromSec * 1000) },
+      };
+      this.#meta.pausedAt = paused ? now : null;
       this.#meta.accumulatedPauseMs = 0;
+      this.#meta.clockRevision = this.#state.revision;
       this.#unheard = false;
+      this.#resumeFromSec = 0;
     }
     if (this.#pendingFallback || this.#state.nowPlaying === null) this.#fallback();
     this.#commit();

@@ -100,6 +100,58 @@ describe('SessionClient', () => {
     c.stop();
   });
 
+  it('coalesces player resyncs: at most one reconnect per 10 s, none once a state catches up', async () => {
+    vi.useFakeTimers();
+    const c = new SessionClient({
+      role: 'player',
+      origin: 'http://hub',
+      WebSocketImpl: FakeWebSocket as unknown as typeof WebSocket,
+    });
+    c.start();
+    await vi.advanceTimersByTimeAsync(0);
+    let ws = FakeWebSocket.last();
+    ws.open();
+    ws.receive({ type: 'state', state: playerState({ changeSeq: 3 }) });
+    const heartbeat = (changeSeq: number) =>
+      FakeWebSocket.last().receive({
+        type: 'heartbeat',
+        serverTime: Date.now(),
+        changeSeq,
+        revision: 2,
+      });
+
+    heartbeat(4); // gap: first resync reconnects at once
+    expect(c.resyncs).toBe(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    ws = FakeWebSocket.last();
+    ws.open();
+    // The server's state on connect is still behind (e.g. it lagged): heartbeats keep showing a gap.
+    ws.receive({ type: 'state', state: playerState({ changeSeq: 4 }) });
+    for (let i = 0; i < 3; i++) heartbeat(5);
+    expect(c.resyncs).toBe(1);
+    expect(ws.readyState).toBe(1);
+    // The one coalesced reconnect fires when the 10 s window ends.
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(ws.readyState).toBe(1);
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(ws.readyState).toBe(3);
+    expect(c.resyncs).toBe(2);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(FakeWebSocket.instances).toHaveLength(3);
+
+    // A gap that a state message closes before the window ends causes no reconnect.
+    ws = FakeWebSocket.last();
+    ws.open();
+    heartbeat(6);
+    ws.receive({ type: 'state', state: playerState({ changeSeq: 6 }) });
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(ws.readyState).toBe(1);
+    expect(c.resyncs).toBe(2);
+    expect(FakeWebSocket.instances).toHaveLength(3);
+    c.stop();
+  });
+
   it('forwards toasts and answers pongs into the clock offset', async () => {
     const c = new SessionClient({
       role: 'guest',

@@ -31,6 +31,12 @@ const lastPlayerState = async (c: WsClient) => {
   return { revision: s.revision, np: s.state.nowPlaying, queue: s.state.queue };
 };
 
+/** The player socket's `state` for the session's current `changeSeq`. */
+const lastPlayerStateMsg = async (c: WsClient): Promise<PlayerState> => {
+  const seq = hub.app.jukebox.session.changeSeq;
+  return (await c.next('state', (m) => m.state.changeSeq === seq)).state as PlayerState;
+};
+
 beforeEach(async () => {
   hub = await makeHub();
   for (let i = 1; i <= 9; i++) hub.yt.add({ id: vid(i), title: `Song ${i}` });
@@ -316,6 +322,71 @@ describe('player transitions', () => {
     const next = await g.next('state');
     expect(next.state.changeSeq).toBe(st.state.changeSeq + 1);
     g.ws.terminate();
+  });
+});
+
+describe('track clock', () => {
+  const startedAt = () => hub.app.jukebox.session.state.nowPlaying?.startedAt;
+
+  it('a reconnecting or `playing` player does not reset startedAt', async () => {
+    // The track starts with no player online: the first connect starts its clock, once.
+    await admin('POST', '/api/admin/requests', { videoId: vid(1), idempotencyKey: 'o1' });
+    hub.clock.advance(30_000);
+    let p = await player();
+    const anchored = hub.clock.now;
+    expect(startedAt()).toBe(anchored);
+    const rev = hub.app.jukebox.session.revision;
+
+    hub.clock.advance(2000);
+    p.send({ type: 'event', kind: 'playing', revision: rev });
+    p.send({ type: 'position', position: 2, playerState: 1, revision: rev });
+    await flush(p);
+    expect(startedAt()).toBe(anchored);
+
+    for (let i = 0; i < 3; i++) {
+      hub.clock.advance(2000);
+      p.ws.terminate();
+      await new Promise((r) => setTimeout(r, 20));
+      p = await player();
+      p.send({ type: 'event', kind: 'playing', revision: rev });
+      await flush(p);
+      expect(startedAt()).toBe(anchored);
+    }
+    // A second socket of the same player while the first is open changes nothing either.
+    const q = await player();
+    expect(startedAt()).toBe(anchored);
+    expect(hub.app.jukebox.session.revision).toBe(rev);
+    p.ws.terminate();
+    q.ws.terminate();
+  });
+
+  it('a relaunch resumes the restored track at its last position, not its stale clock', async () => {
+    await admin('POST', '/api/admin/requests', { videoId: vid(1), idempotencyKey: 'o1' });
+    let p = await player();
+    const rev = hub.app.jukebox.session.revision;
+    hub.clock.advance(42_000);
+    p.send({ type: 'position', position: 42, playerState: 1, revision: rev });
+    await flush(p);
+    p.ws.terminate();
+
+    // The app is closed for three hours, then relaunched; the TV connects within the grace window.
+    hub.clock.advance(3 * 3600_000);
+    const app = await hub.restart();
+    expect(app.jukebox.session.state.nowPlaying?.startedAt).toBeLessThan(hub.clock.now - 3600_000);
+    p = await player();
+    const st = await lastPlayerStateMsg(p);
+    expect(app.jukebox.applyRestartRule()).toBe(false);
+    expect(app.jukebox.session.revision).toBe(rev);
+    expect(startedAt()).toBe(hub.clock.now - 42_000);
+    expect(st.playback.nowPlaying?.startedAt).toBe(hub.clock.now - 42_000);
+
+    // Re-anchored once: a reconnect later does not move it again.
+    hub.clock.advance(5000);
+    p.ws.terminate();
+    await new Promise((r) => setTimeout(r, 20));
+    p = await player();
+    expect(startedAt()).toBe(hub.clock.now - 5000 - 42_000);
+    p.ws.terminate();
   });
 });
 
