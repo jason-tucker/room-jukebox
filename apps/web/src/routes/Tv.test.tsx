@@ -62,6 +62,7 @@ describe('/tv Start Music', () => {
     );
     expect(screen.getByText(S.tv.requestSong)).toBeInTheDocument();
     expect(screen.getByText(S.tv.joinWifi)).toBeInTheDocument();
+    expect(screen.getByText('Wi-Fi: PartyNet')).toBeInTheDocument();
     expect(screen.queryByTestId('start-music')).toBeNull();
 
     act(() => yt.handlers?.onAutoplayBlocked?.());

@@ -869,6 +869,7 @@ export class Session {
         lanUrl: lan.lanUrl,
         publicUrl: null,
         wifi: wifiQrPayload(settings.wifi, this.#d.settings.wifiPassword()),
+        wifiSsid: settings.wifi?.ssid ? settings.wifi.ssid : null,
       },
       partyCode: null,
       me: { playerId, role: p === undefined || p === leader ? 'leader' : 'follower' },

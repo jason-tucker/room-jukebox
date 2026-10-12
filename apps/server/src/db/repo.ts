@@ -33,7 +33,7 @@ const und = <T>(v: T | undefined): T | null => (v === undefined ? null : v);
 // ---------------------------------------------------------------------------------------------
 // Settings
 
-export type WifiSecurity = 'WPA' | 'WEP' | 'nopass';
+export type WifiSecurity = 'WPA' | 'WEP' | 'nopass' | 'SAE';
 
 /** Non-secret settings, stored as JSON in `settings.data`. */
 export interface SettingsData {

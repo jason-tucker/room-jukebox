@@ -92,6 +92,8 @@ On the first start the TV window opens as a normal window showing the setup wiza
 reachable only from the laptop itself). It walks through the room name, the owner password (at
 least 8 characters), the optional YouTube API key, fallback playlists and the Wi-Fi details for the
 QR code. When you finish, the window switches to the TV page on its own and goes full screen.
+The Wi-Fi QR joins WPA2 networks; a WPA3-only network needs the WPA3 choice. If a phone opens its
+settings but does not join, forget the saved network on the phone or type the password shown.
 
 The app stores its device tokens in `%APPDATA%\RoomJukebox\desktop-state.json`, encrypted with
 Windows DPAPI (`safeStorage`) for your Windows account; the hub data (settings, queue, history) lives

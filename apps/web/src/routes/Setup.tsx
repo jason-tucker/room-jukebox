@@ -14,7 +14,7 @@ import { LINKS, S } from '../strings.ts';
  * desktop via `window.jukebox.setupComplete(reply)`, and dropped.
  */
 
-type Security = 'WPA' | 'WEP' | 'nopass';
+type Security = 'WPA' | 'SAE' | 'WEP' | 'nopass';
 const STEPS = ['welcome', 'password', 'room', 'key', 'playlists', 'wifi', 'lan', 'finish'] as const;
 type Step = (typeof STEPS)[number];
 

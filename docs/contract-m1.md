@@ -30,9 +30,9 @@ Admin and setup routes and the player WebSocket apply the **household source gat
 
 **PlaylistInfo** `{ id, playlistId, title, url, videoCount, importedAt, lastError?: string }`.
 
-**PlayerState** (TV page) `{ revision, changeSeq, serverTime, protocolVersion, roomName, playback: GuestState['playback'], upcoming: { title, requesterName }[] /* max 5 */, qr: { lanUrl: string, publicUrl: string|null, wifi: string|null /* full WIFI: payload */ }, partyCode: string|null, me: { playerId, role: 'leader'|'follower' }, status: PlayerInfo['status'], lastError: { code?: string, message, at }|null, selfTest: { autoplayBlocked: boolean } }`.
+**PlayerState** (TV page) `{ revision, changeSeq, serverTime, protocolVersion, roomName, playback: GuestState['playback'], upcoming: { title, requesterName }[] /* max 5 */, qr: { lanUrl: string, publicUrl: string|null, wifi: string|null /* full WIFI: payload */, wifiSsid: string|null }, partyCode: string|null, me: { playerId, role: 'leader'|'follower' }, status: PlayerInfo['status'], lastError: { code?: string, message, at }|null, selfTest: { autoplayBlocked: boolean } }`.
 
-**SettingsPublic** (admin-visible subset; never contains the password verifier, the API key, tokens or the household key) `{ roomName, lanPort, country, limits: Limits (core), fallbackPlaylists: PlaylistInfo[], wifi: { ssid, security: 'WPA'|'WEP'|'nopass', hidden: boolean }|null /* password never echoed */, hasWifiPassword: boolean, hasApiKey: boolean, apiKeyLast4: string|null, tvDisplayId: number|null, autoStart: boolean, autoFullscreen: boolean, kiosk: boolean, publicMode: boolean, hubId, hubEpoch }`.
+**SettingsPublic** (admin-visible subset; never contains the password verifier, the API key, tokens or the household key) `{ roomName, lanPort, country, limits: Limits (core), fallbackPlaylists: PlaylistInfo[], wifi: { ssid, security: 'WPA'|'WEP'|'nopass'|'SAE', hidden: boolean }|null /* password never echoed */, hasWifiPassword: boolean, hasApiKey: boolean, apiKeyLast4: string|null, tvDisplayId: number|null, autoStart: boolean, autoFullscreen: boolean, kiosk: boolean, publicMode: boolean, hubId, hubEpoch }`.
 
 **SettingsPatch** = partial SettingsPublic with these write-only extras: `{ youtubeApiKey?: string|null, wifiPassword?: string|null }`.
 

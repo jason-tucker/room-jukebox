@@ -506,7 +506,8 @@ describe('privacy', () => {
     expect(tv.qr).toEqual({
       lanUrl: 'http://192.168.1.20:8080/',
       publicUrl: null,
-      wifi: 'WIFI:T:WPA;S:Party;P:wifisecret1;H:false;;',
+      wifi: 'WIFI:T:WPA;S:Party;P:wifisecret1;;',
+      wifiSsid: 'Party',
     });
     ws.ws.terminate();
     p.ws.terminate();

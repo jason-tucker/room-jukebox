@@ -151,7 +151,7 @@ export const SetupBodySchema = z.object({
     .object({
       ssid: z.string(),
       password: z.string(),
-      security: z.enum(['WPA', 'WEP', 'nopass']),
+      security: z.enum(['WPA', 'WEP', 'nopass', 'SAE']),
       hidden: z.boolean(),
     })
     .optional(),

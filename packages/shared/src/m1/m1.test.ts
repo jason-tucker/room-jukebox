@@ -105,7 +105,7 @@ describe('state', () => {
       roomName: 'R',
       playback,
       upcoming: [],
-      qr: { lanUrl: 'http://x', publicUrl: null, wifi: null },
+      qr: { lanUrl: 'http://x', publicUrl: null, wifi: null, wifiSsid: null },
       partyCode: null,
       me: { playerId: 'p', role: 'leader' },
       status: 'online',

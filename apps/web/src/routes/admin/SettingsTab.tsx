@@ -235,9 +235,9 @@ export function SearchSourceForm({ state, run }: TabProps) {
   );
 }
 
-type Security = 'WPA' | 'WEP' | 'nopass';
+type Security = 'WPA' | 'SAE' | 'WEP' | 'nopass';
 
-function WifiForm({ state, run }: TabProps) {
+export function WifiForm({ state, run }: TabProps) {
   const w = state.settings.wifi;
   const [ssid, setSsid] = useState(w?.ssid ?? '');
   const [password, setPassword] = useState('');

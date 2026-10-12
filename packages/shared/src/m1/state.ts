@@ -27,7 +27,7 @@ export type PlaylistInfo = z.infer<typeof PlaylistInfoSchema>;
 
 export const WifiSettingsSchema = z.object({
   ssid: z.string(),
-  security: z.enum(['WPA', 'WEP', 'nopass']),
+  security: z.enum(['WPA', 'WEP', 'nopass', 'SAE']),
   hidden: z.boolean(),
 });
 
@@ -137,6 +137,7 @@ export const PlayerStateSchema = z.object({
     lanUrl: z.string(),
     publicUrl: z.string().nullable(),
     wifi: z.string().nullable(),
+    wifiSsid: z.string().nullable(),
   }),
   partyCode: z.string().nullable(),
   me: z.object({ playerId: IdSchema, role: z.enum(['leader', 'follower']) }),

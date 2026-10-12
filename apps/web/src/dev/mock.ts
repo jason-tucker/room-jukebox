@@ -331,6 +331,7 @@ class MockHub {
         wifi: w
           ? `WIFI:T:${w.security};S:${w.ssid};P:secret123;${w.hidden ? 'H:true;' : ''};`
           : null,
+        wifiSsid: w ? w.ssid : null,
       },
       partyCode: null,
       me: { playerId: 'tv-hub', role: 'leader' },

@@ -61,8 +61,19 @@ describe('LAN and Wi-Fi QR', () => {
       'WIFI:T:WPA;S:My\\;Net;P:p\\:w;H:true;;',
     );
     expect(wifiQrPayload({ ssid: 'Open', security: 'nopass', hidden: false }, 'x')).toBe(
-      'WIFI:T:nopass;S:Open;P:;H:false;;',
+      'WIFI:T:nopass;S:Open;;',
     );
+    expect(wifiQrPayload({ ssid: 'Open', security: 'nopass', hidden: true }, 'x')).toBe(
+      'WIFI:T:nopass;S:Open;H:true;;',
+    );
+    for (const t of ['WPA', 'WEP', 'SAE'] as const) {
+      expect(wifiQrPayload({ ssid: 'N', security: t, hidden: false }, 'pw')).toBe(
+        `WIFI:T:${t};S:N;P:pw;;`,
+      );
+      expect(wifiQrPayload({ ssid: 'N', security: t, hidden: true }, 'pw')).toBe(
+        `WIFI:T:${t};S:N;P:pw;H:true;;`,
+      );
+    }
     expect(wifiQrPayload(null, 'x')).toBeNull();
   });
 

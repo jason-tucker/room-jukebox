@@ -74,9 +74,9 @@ export function safeAddresses(provider: LanProvider): LanAddress[] {
 /** Escapes `\ ; , : "` with a backslash (the WIFI: QR grammar). */
 export const escapeWifi = (s: string): string => s.replace(/([\\;,:"])/g, '\\$1');
 
-/** `WIFI:T:<WPA|WEP|nopass>;S:<ssid>;P:<password>;H:<true|false>;;` or null without settings. */
+/** `WIFI:T:<WPA|WEP|nopass|SAE>;S:<ssid>;P:<password>;;` (`H:true;` only when hidden) or null without settings. */
 export function wifiQrPayload(wifi: SettingsData['wifi'], password: string | null): string | null {
   if (wifi === null || wifi.ssid === '') return null;
-  const pass = wifi.security === 'nopass' ? '' : (password ?? '');
-  return `WIFI:T:${wifi.security};S:${escapeWifi(wifi.ssid)};P:${escapeWifi(pass)};H:${wifi.hidden ? 'true' : 'false'};;`;
+  const pw = wifi.security === 'nopass' ? '' : `P:${escapeWifi(password ?? '')};`;
+  return `WIFI:T:${wifi.security};S:${escapeWifi(wifi.ssid)};${pw}${wifi.hidden ? 'H:true;' : ''};`;
 }

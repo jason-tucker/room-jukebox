@@ -213,6 +213,11 @@ export function Tv() {
         )}
 
         <div className="mt-auto flex flex-col gap-3">
+          {state && state.qr.wifi && state.qr.wifiSsid && (
+            <p className="text-center text-[min(2.6vw,4.5vh)] font-semibold">
+              {S.tv.wifiName(state.qr.wifiSsid)}
+            </p>
+          )}
           {state && (
             <div className="flex items-start justify-center gap-3">
               {state.qr.wifi && (
