@@ -108,21 +108,27 @@ function Playlists({ state, run }: TabProps) {
 
 function OwnerSearch({ state, push }: TabProps) {
   const { flow, sheet, ctx } = useOwnerRequest(state, push);
+  const source = state.settings.search?.source ?? 'page';
+  const page = source === 'page';
+  const title = page ? S.admin.ownerSearchPage : S.admin.ownerSearch;
   return (
-    <Section title={S.admin.ownerSearch}>
-      {state.settings.hasApiKey ? (
+    <Section title={title}>
+      {state.settings.hasApiKey || source !== 'api-only' ? (
         <>
-          <p className="text-base text-muted">{S.admin.ownerSearchHint}</p>
+          <p className="text-base text-muted">
+            {page ? S.admin.ownerSearchPageHint : S.admin.ownerSearchHint}
+          </p>
           <SearchBox
-            label={S.admin.ownerSearch}
+            label={title}
             search={{ enabled: true, remaining: null, low: false }}
             runSearch={api.admin.search}
+            suggest={api.guest.suggest}
             onPick={flow.open}
             ctx={ctx}
           />
         </>
       ) : (
-        <p className="text-base text-muted">{S.admin.apiKeyNone}</p>
+        <p className="text-base text-muted">{S.admin.apiOnlyNoKey}</p>
       )}
       {sheet}
     </Section>

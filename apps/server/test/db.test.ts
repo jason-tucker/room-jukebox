@@ -134,14 +134,14 @@ describe('backups', () => {
           payload: { password: 'correct horse' },
         });
         expect(login.statusCode).toBe(200);
-        // the key works: a search reaches YouTube
-        const search = await restored.inject({
-          method: 'POST',
-          url: '/api/search',
-          payload: { q: 'x' },
+        // the key works: a resolve reaches videos.list with it
+        const resolve = await restored.inject({
+          method: 'GET',
+          url: `/api/videos/resolve?input=${vid(9)}`,
         });
-        expect(search.statusCode).toBe(200);
-        expect(hub.yt.calls.at(-2)?.params.get('key')).toBe('AIzaROUNDTRIP42');
+        expect(resolve.statusCode).toBe(200);
+        expect(hub.yt.calls.at(-1)?.endpoint).toBe('videos');
+        expect(hub.yt.calls.at(-1)?.params.get('key')).toBe('AIzaROUNDTRIP42');
       } finally {
         await restored.close();
       }

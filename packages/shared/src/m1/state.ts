@@ -31,6 +31,14 @@ export const WifiSettingsSchema = z.object({
   hidden: z.boolean(),
 });
 
+/**
+ * Where search goes: `page` = YouTube's public results page always (the API key, if any, is only
+ * used for playlists and pre-checks); `api-first` = Data API, then the page once the quota is
+ * used; `api-only` = Data API with no fallback.
+ */
+export const SearchSourceSchema = z.enum(['page', 'api-first', 'api-only']);
+export type SearchSource = z.infer<typeof SearchSourceSchema>;
+
 export const SettingsPublicSchema = z.object({
   roomName: z.string(),
   lanPort: z.number().int().nonnegative(),
@@ -48,12 +56,19 @@ export const SettingsPublicSchema = z.object({
   publicMode: z.boolean(),
   hubId: IdSchema,
   hubEpoch: z.number().int().nonnegative(),
-  /** Search fallback to YouTube's public results page once the API quota is used (owner toggle). */
-  search: z.object({ unofficialFallback: z.boolean() }).optional(),
+  /** Search source (owner setting; default `page`). */
+  search: z.object({ source: SearchSourceSchema }).optional(),
 });
 export type SettingsPublic = z.infer<typeof SettingsPublicSchema>;
 
 export const SettingsPatchSchema = SettingsPublicSchema.partial().extend({
+  /** `{ source }`, or the pre-0.0.6 `{ unofficialFallback }` (true → api-first, false → api-only). */
+  search: z
+    .union([
+      z.object({ source: SearchSourceSchema }),
+      z.object({ unofficialFallback: z.boolean() }),
+    ])
+    .optional(),
   youtubeApiKey: z.string().nullable().optional(),
   wifiPassword: z.string().nullable().optional(),
 });

@@ -10,6 +10,7 @@ import { Guest } from './Guest.tsx';
 const h = vi.hoisted(() => ({
   state: null as GuestState | null,
   search: vi.fn(),
+  suggest: vi.fn(),
   request: vi.fn(),
 }));
 
@@ -29,6 +30,7 @@ vi.mock('../lib/api.ts', async (importOriginal) => {
         hello: () => ok({ guestId: 'g1', name: null, noticeAccepted: true }),
         notice: () => ok({ ok: true }),
         search: h.search,
+        suggest: h.suggest,
         request: h.request,
       },
     },
@@ -87,6 +89,8 @@ describe('Guest page', () => {
   beforeEach(() => {
     h.search.mockReset();
     h.request.mockReset();
+    h.suggest.mockReset();
+    h.suggest.mockResolvedValue(['uptown funk', 'uptown girl']);
     h.state = guestState({ search: searchOn, queue: [entry({ mine: true })] });
   });
 
@@ -163,5 +167,18 @@ describe('Guest page', () => {
     expect(await screen.findByText(S.search.resting)).toBeInTheDocument();
     expect(order()).toEqual(['search-box', 'paste-section', 'now-playing']);
     expect(screen.getByRole('button', { name: S.guest.paste })).toBeVisible();
+  });
+
+  it('suggests while typing; picking one searches it', async () => {
+    h.search.mockResolvedValue({ ok: true, status: 200, data: reply });
+    renderGuest();
+    const box = await screen.findByRole('searchbox');
+    fireEvent.change(box, { target: { value: 'upto' } });
+    const options = await screen.findAllByRole('option');
+    expect(options.map((o) => o.textContent)).toEqual(['uptown funk', 'uptown girl']);
+    expect(h.suggest).toHaveBeenCalledWith('upto', expect.any(AbortSignal));
+    fireEvent.click(options[0]!);
+    expect(h.search).toHaveBeenCalledWith('uptown funk');
+    expect(await screen.findAllByTestId('search-row')).toHaveLength(2);
   });
 });

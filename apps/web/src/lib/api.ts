@@ -17,6 +17,7 @@ import {
   SettingsPublicSchema,
   SetupReplySchema,
   SetupStatusReplySchema,
+  SuggestReplySchema,
   HealthReplySchema,
   type HelloBody,
   type PasswordChangeBody,
@@ -52,6 +53,7 @@ interface CallOptions<T> {
   schema?: z.ZodType<T>;
   /** Overrides the desktop bearer (setup uses the one-time token it just received). */
   bearer?: string | null;
+  signal?: AbortSignal;
 }
 
 export async function call<T = unknown>(
@@ -76,6 +78,7 @@ export async function call<T = unknown>(
       headers,
       credentials: 'include',
       ...(opts.body !== undefined ? { body: JSON.stringify(opts.body) } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
     });
   } catch (err) {
     return {
@@ -156,6 +159,18 @@ export const api = {
     request: (body: RequestBody) =>
       call('POST', '/api/requests', { body, schema: RequestReplySchema }),
     search: (q: string) => call('POST', '/api/search', { body: { q }, schema: SearchReplySchema }),
+    /**
+     * YouTube's typing suggestions. null when there is nothing new to show: the hub dropped the
+     * request (204, asked too fast), or it failed or was aborted (keep what is on screen).
+     */
+    suggest: async (q: string, signal?: AbortSignal): Promise<string[] | null> => {
+      const r = await call('GET', `/api/search/suggest?q=${enc(q)}`, {
+        ...(signal ? { signal } : {}),
+      });
+      if (!r.ok || r.status === 204) return null;
+      const parsed = SuggestReplySchema.safeParse(r.data);
+      return parsed.success ? parsed.data.suggestions : null;
+    },
     privacy: () => call('GET', '/api/privacy.json', { schema: PrivacyReplySchema }),
   },
 

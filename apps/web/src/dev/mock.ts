@@ -5,10 +5,12 @@
  * imports it only when VITE_MOCK is "1").
  *
  * Handy inputs: owner password "jukebox1"; open /setup?mocksetup=1 to see the wizard; resolve
- * "blockedvid1" for a not-embeddable verdict and "toolongvid1" for an over-limit one; search
- * "quota" to switch to the unofficial provider (as when the API quota runs out), "budget" for the
- * per-guest budget error, "down" for YouTube not answering, "off" to turn guest search off (reload
- * to undo), "low" to flip the low banner, "zero" to exhaust guest search.
+ * "blockedvid1" for a not-embeddable verdict and "toolongvid1" for an over-limit one. Search
+ * defaults to the YouTube-page source (pick an API source in Settings to see budgets); typing
+ * suggestions answer any prefix of 2+ characters. Search "quota" to switch the API sources to the
+ * unofficial provider (as when the API quota runs out), "budget" for the per-guest budget error,
+ * "down" for YouTube not answering, "off" to turn guest search off (reload to undo), "low" to
+ * flip the low banner, "zero" to exhaust guest search.
  */
 import type {
   AdminState,
@@ -20,6 +22,7 @@ import type {
   PlaylistInfo,
   ResolveReply,
   SearchProvider,
+  SearchSource,
   ServerMessage,
   SettingsPublic,
   VideoCard,
@@ -152,7 +155,7 @@ class MockHub {
     publicMode: false,
     hubId: 'mock-hub',
     hubEpoch: 1,
-    search: { unofficialFallback: true },
+    search: { source: 'page' },
   };
   playlists: PlaylistInfo[] = [
     {
@@ -278,12 +281,14 @@ class MockHub {
       },
       queue: this.queue.map((e) => this.#pub(e)),
       recentHistory: this.history.map((e) => this.#pub(e)),
-      search: {
-        enabled: !this.searchOff && this.guestSearchesLeft !== null,
-        remaining: this.guestSearchesLeft,
-        low: this.searchLow,
-        provider: this.searchProvider,
-      },
+      search: this.pageSearch
+        ? { enabled: !this.searchOff, remaining: null, low: false, provider: 'unofficial' }
+        : {
+            enabled: !this.searchOff && this.guestSearchesLeft !== null,
+            remaining: this.guestSearchesLeft,
+            low: this.searchLow,
+            provider: this.searchProvider,
+          },
       limits: {
         maxPendingPerGuest: this.settings.limits.maxPendingPerGuest,
         cooldownSec: this.settings.limits.cooldownSec,
@@ -379,6 +384,19 @@ class MockHub {
       durationSec: 240,
     };
     return { ...v, thumbnail: thumb(id), playable: true, source: 'youtube' };
+  }
+
+  get pageSearch(): boolean {
+    return (this.settings.search?.source ?? 'page') === 'page';
+  }
+
+  /** Typing suggestions in YouTube's style: matching catalog titles, then common endings. */
+  suggest(q: string): string[] {
+    const t = q.trim().toLowerCase();
+    if (t.length < 2) return [];
+    const titles = CATALOG.map((c) => c.title.toLowerCase()).filter((x) => x.includes(t));
+    const endings = ['', ' lyrics', ' remix', ' live', ' karaoke', ' acoustic', ' 1 hour'];
+    return [...new Set([...titles, ...endings.map((e) => `${t}${e}`)])].slice(0, 10);
   }
 
   search(q: string): VideoCard[] {
@@ -541,6 +559,14 @@ class MockHub {
           this.broadcast();
           return err(503, 'search-disabled', 'Search is disabled');
         }
+        if (this.pageSearch) {
+          return json(200, {
+            results: this.search(q),
+            remaining: null,
+            cached: false,
+            provider: 'unofficial',
+          });
+        }
         if (q === 'quota') this.searchProvider = 'unofficial';
         if (!owner && q === 'low') this.searchLow = !this.searchLow;
         if (!owner && q === 'zero') this.guestSearchesLeft = 0;
@@ -556,6 +582,8 @@ class MockHub {
           provider: this.searchProvider,
         });
       }
+      case 'GET /api/search/suggest':
+        return json(200, { suggestions: this.suggest(url.searchParams.get('q') ?? '') });
       case 'GET /api/privacy.json':
         return err(404, 'not-found', 'Mock has no privacy document (the page shows its fallback)');
       case 'POST /api/admin/login':
@@ -590,8 +618,14 @@ class MockHub {
       case 'GET /api/admin/settings':
         return json(200, this.adminState().settings);
       case 'PATCH /api/admin/settings': {
-        const { youtubeApiKey, wifiPassword, ...rest } = b as Record<string, unknown>;
+        const { youtubeApiKey, wifiPassword, search, ...rest } = b as Record<string, unknown>;
         Object.assign(this.settings, rest);
+        if (search && typeof search === 'object') {
+          // `{ source }`, or the legacy `{ unofficialFallback }` boolean.
+          const s = search as { source?: SearchSource; unofficialFallback?: boolean };
+          const source = s.source ?? (s.unofficialFallback === false ? 'api-only' : 'api-first');
+          this.settings.search = { source };
+        }
         if (youtubeApiKey !== undefined) {
           this.settings.hasApiKey = youtubeApiKey !== null;
           this.settings.apiKeyLast4 =

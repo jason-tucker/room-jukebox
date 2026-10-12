@@ -52,6 +52,7 @@ All bodies JSON. Idempotent commands carry `idempotencyKey` (uuid) and are safe 
 - `GET /api/videos/resolve?input=<url or id>` → **ResolveReply** `{ videoId, title, thumbnail?, channelTitle?, durationSec?: number|null, playable: boolean, reason?: PrescreenReason, source?: 'youtube'|'owner', message?: string }` (oEmbed title; `videos.list` pre-screen when a key exists).
 - `POST /api/requests` **RequestBody** `{ videoId, idempotencyKey, name?: string }` → `201 { entry: EntryPublic, duplicate: boolean }` or `409/422/429` ApiError with `code` ∈ `too-many-pending|cooldown|duplicate|too-long|not-found|private|not-embeddable|age-restricted|live|region-blocked|queue-full`.
 - `POST /api/search` **SearchBody** `{ q: string }` → **SearchReply** `{ results: VideoCard[], remaining: number|null, cached: boolean }` or `429 { code: 'search-budget'|'daily-quota' }` / `503 { code: 'search-disabled' }`. **VideoCard** `{ videoId, title, channelTitle, thumbnail, durationSec?: number|null, playable: boolean, reason?, source?, message? }` (unaltered order from YouTube; unplayable rows keep their position).
+- `GET /api/search/suggest?q=` → **SuggestReply** `{ suggestions: string[] }` (at most 10; YouTube's typing suggestions, cached 10 min per normalised prefix; `[]` on any upstream failure) or `204` with no body when the same source IP asked less than 300 ms ago.
 - `GET /api/privacy.json` → `{ updatedAt, sections: { heading, body }[] }` (the page renders this).
 
 **Admin** (gate + auth)

@@ -1,7 +1,8 @@
 /**
  * YouTube features on top of the API client: video lookup into the `videos` table, pre-screen,
- * link resolve, submit-only search with the 24 h ID cache and the daily search budget, playlist
- * import, and the quota log.
+ * link resolve, submit-only search (YouTube's results page by default, or the Data API with its
+ * daily budget when the owner picks it) with the 24 h ID cache, playlist import, and the quota
+ * log.
  */
 import { randomUUID } from 'node:crypto';
 import {
@@ -42,7 +43,7 @@ const MAX_PLAYLIST_PAGES = 20;
 const PACIFIC = 'America/Los_Angeles';
 
 /**
- * Budget rejections the results-page fallback may answer. The per-guest/per-IP `interval`
+ * Budget rejections the results-page fallback (source `api-first`) may answer. The per-guest/per-IP `interval`
  * cooldown is not one of them: it still answers 429.
  */
 const EXHAUSTED: ReadonlySet<SearchRejection> = new Set<SearchRejection>([
@@ -323,10 +324,14 @@ export class YouTubeService {
   }
 
   /**
-   * `GuestState.search`: the official API while it can still serve this guest, else the
-   * results-page fallback when the owner allows it, else off.
+   * `GuestState.search`. Source `page`: always the results page. `api-first`: the official API
+   * while it can still serve this guest, then the results page. `api-only`: the API, else off.
    */
   searchState(guestId: string | null): GuestState['search'] {
+    const source = this.#settings.searchSource();
+    if (source === 'page') {
+      return { enabled: true, remaining: null, low: false, provider: 'unofficial' };
+    }
     const remaining = this.remainingFor(guestId);
     if (remaining !== null && remaining > 0) {
       return {
@@ -336,7 +341,7 @@ export class YouTubeService {
         provider: 'youtube-api',
       };
     }
-    if (this.#settings.unofficialFallback()) {
+    if (source === 'api-first') {
       return { enabled: true, remaining: null, low: false, provider: 'unofficial' };
     }
     return {
@@ -348,13 +353,15 @@ export class YouTubeService {
   }
 
   /**
-   * Submit-only search. Cache hits (either provider) are free. Misses use the Data API while the
-   * budget lasts; once it is exhausted (or with no key) they use the results-page fallback when
-   * `search.unofficialFallback` is on.
+   * Submit-only search. Cache hits (either provider) are free. Source `page` (the default) always
+   * reads YouTube's results page and never spends API search quota. `api-first` uses the Data
+   * API while the budget lasts, then the results page (also with no key); `api-only` never falls
+   * back.
    */
   async search(q: string, actor: SearchActor): Promise<SearchReply> {
     const key = this.#settings.apiKey();
-    const fallback = this.#settings.unofficialFallback();
+    const source = this.#settings.searchSource();
+    const fallback = source !== 'api-only';
     if (key === null && !fallback) {
       throw new HttpError(
         503,
@@ -370,7 +377,7 @@ export class YouTubeService {
       for (const c of cached.cards ?? []) snippets.set(c.videoId, rowFromCard(c, cached.fetchedAt));
       return this.#reply(cached.videoIds, snippets, cached.provider, true, actor);
     }
-    if (key === null) return this.#searchUnofficial(q, query, actor);
+    if (key === null || source === 'page') return this.#searchUnofficial(q, query, actor);
 
     const limits = this.#settings.data().limits;
     const day = pacificDay(now);

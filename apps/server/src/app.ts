@@ -31,6 +31,7 @@ import type { SpikeSession } from './spike/session.ts';
 import type { FetchLike } from './youtube/client.ts';
 import { createYouTubeApi } from './youtube/client.ts';
 import { pacificDay, YouTubeService } from './youtube/service.ts';
+import { SuggestService } from './youtube/suggest.ts';
 import { searchUnofficial } from './youtube/unofficial.ts';
 
 export const VERSION: string = pkg.version;
@@ -164,6 +165,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     settings,
     auth: new AdminAuth(repos, now),
     youtube,
+    suggest: new SuggestService({ fetch: fetchImpl, now }),
     session,
     lan,
     hooks: options.hooks ?? {},

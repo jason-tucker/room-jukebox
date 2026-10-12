@@ -16,6 +16,7 @@ import { safeAddresses } from './lan.ts';
 import type { Session } from './session/session.ts';
 import type { SettingsService } from './settings.ts';
 import type { YouTubeService } from './youtube/service.ts';
+import type { SuggestService } from './youtube/suggest.ts';
 import type { SettingsPublic } from '@room-jukebox/shared';
 
 export interface SetupCompleteInfo {
@@ -37,6 +38,7 @@ export interface AppContext {
   settings: SettingsService;
   auth: AdminAuth;
   youtube: YouTubeService;
+  suggest: SuggestService;
   session: Session;
   lan: LanProvider;
   hooks: AppHooks;

@@ -1,8 +1,8 @@
 /**
  * Unofficial search: reads the `ytInitialData` JSON embedded in YouTube's public results page.
  * This is not an API: it breaks YouTube's terms and can stop working whenever YouTube changes the
- * page. It is the owner-switchable fallback for when the Data API search budget is used up or no
- * key is configured (settings `search.unofficialFallback`). Everything here fails soft into
+ * page. It is the default search source (settings `search.source: 'page'`) and the fallback for
+ * `api-first` once the Data API search budget is used up. Everything here fails soft into
  * `UnofficialSearchError`, which the service maps to 502 `youtube-unavailable`.
  */
 import type { VideoCard } from '@room-jukebox/shared';

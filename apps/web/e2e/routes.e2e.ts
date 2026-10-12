@@ -31,12 +31,12 @@ const guestState = {
   flags: { hasApiKey: false, publicMode: false },
 };
 
-const searchOn = { enabled: true, remaining: 5, low: false, provider: 'youtube-api' };
+const searchOn = { enabled: true, remaining: null, low: false, provider: 'unofficial' };
 
 const searchReply = {
-  remaining: 4,
+  remaining: null,
   cached: false,
-  provider: 'youtube-api',
+  provider: 'unofficial',
   results: [
     {
       videoId: 'OPf0YbXqDm0',
@@ -59,9 +59,22 @@ const searchReply = {
   ],
 };
 
+/** `POST /api/search` bodies of the current test. */
+const searches: unknown[] = [];
+
 async function stubGuest(page: Page, search: object = guestState.search) {
   const requests: unknown[] = [];
-  await page.route('**/api/search', (r) => r.fulfill({ json: searchReply }));
+  searches.length = 0;
+  await page.route('**/api/search', (r) => {
+    searches.push(r.request().postDataJSON());
+    return r.fulfill({ json: searchReply });
+  });
+  await page.route('**/api/search/suggest?**', (r) => {
+    const q = new URL(r.request().url()).searchParams.get('q') ?? '';
+    return r.fulfill({
+      json: { suggestions: [`${q}wn funk`, `${q}wn girl`, `${q}wn funk lyrics`] },
+    });
+  });
   await page.route('**/api/guest/hello', (r) =>
     r.fulfill({ json: { guestId: 'g1', name: null, noticeAccepted: false } }),
   );
@@ -122,10 +135,19 @@ test('guest: search first, tap a result, request it from the sheet', async ({ pa
     (await page.getByRole('heading', { name: 'Have a link? Paste it' }).boundingBox())?.y ?? 0;
   expect(boxY).toBeLessThan(pasteY);
 
-  await box.fill('uptown funk');
-  await box.press('Enter');
+  // Typing shows YouTube-style suggestions; tapping one searches it.
+  await box.pressSequentially('upto', { delay: 30 });
+  const suggestions = page.getByRole('listbox', { name: 'Suggestions' });
+  await expect(suggestions.getByRole('option')).toHaveCount(3);
+  await expect(suggestions.getByRole('option').first()).toHaveText('uptown funk');
+  await suggestions.getByRole('option', { name: 'uptown girl' }).click();
+  await expect(suggestions).toHaveCount(0);
+  await expect(box).toHaveValue('uptown girl');
   const rows = page.getByTestId('search-row');
   await expect(rows).toHaveCount(2);
+  expect(searches).toEqual([{ q: 'uptown girl' }]);
+  // The results page is the main path: no "via YouTube's page" note.
+  await expect(page.getByText(/public page/i)).toHaveCount(0);
   await expect(page.getByTestId('now-playing-bar')).toBeVisible();
   await expect(rows.nth(1).getByRole('button')).toHaveCount(0);
   await rows.first().getByRole('button').click();
@@ -155,7 +177,12 @@ test('guest page fits a 360 px phone without horizontal scroll', async ({ page }
   await page.goto('/');
   await expect(page.getByRole('link', { name: 'Find on YouTube' })).toBeVisible();
   await page.getByRole('searchbox').fill('uptown');
+  const list = page.getByRole('listbox', { name: 'Suggestions' });
+  await expect(list.getByRole('option')).toHaveCount(3);
+  const listBox = await list.boundingBox();
+  expect((listBox?.x ?? 0) + (listBox?.width ?? 0)).toBeLessThanOrEqual(360);
   await page.getByRole('button', { name: 'Search' }).click();
+  await expect(list).toHaveCount(0);
   await expect(page.getByTestId('search-row')).toHaveCount(2);
   const thumb = await page.getByTestId('search-row').first().locator('img').boundingBox();
   expect(Math.round(thumb?.width ?? 0)).toBe(120);

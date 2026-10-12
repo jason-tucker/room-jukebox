@@ -102,6 +102,8 @@ describe('YouTube routes', () => {
       { id: vid(7), title: 'Epic', duration: 'PT12M' },
     );
     token = (await setup(hub.app, { youtubeApiKey: 'AIzaTESTKEY1234' })).token;
+    // Data API search (the results-page default has its own tests in unofficial.test.ts)
+    await admin('PATCH', '/api/admin/settings', { search: { source: 'api-first' } });
   });
   afterEach(async () => hub.close());
 
@@ -204,8 +206,7 @@ describe('YouTube routes', () => {
           dailyTotal: 2,
         },
       },
-      // the results-page fallback has its own tests (unofficial.test.ts)
-      search: { unofficialFallback: false },
+      search: { source: 'api-only' },
     });
     const blocked = await g.req({ method: 'POST', url: '/api/search', payload: { q: 'other' } });
     expect(blocked.statusCode).toBe(429);
@@ -237,8 +238,8 @@ describe('YouTube routes', () => {
     expect((await g.request(vid(1))).statusCode).toBe(201);
   });
 
-  it("YouTube's quotaExceeded maps to daily-quota (fallback off)", async () => {
-    await admin('PATCH', '/api/admin/settings', { search: { unofficialFallback: false } });
+  it("YouTube's quotaExceeded maps to daily-quota (api-only)", async () => {
+    await admin('PATCH', '/api/admin/settings', { search: { source: 'api-only' } });
     hub.yt.quotaExceeded = true;
     const g = new Guest(hub.app);
     const res = await g.req({ method: 'POST', url: '/api/search', payload: { q: 'x' } });
@@ -247,10 +248,10 @@ describe('YouTube routes', () => {
     expect((await admin('GET', '/api/admin/searches')).json().owner).toBe(0);
   });
 
-  it('search is 503 without a key (fallback off)', async () => {
+  it('search is 503 without a key (api-only)', async () => {
     await admin('PATCH', '/api/admin/settings', {
       youtubeApiKey: null,
-      search: { unofficialFallback: false },
+      search: { source: 'api-only' },
     });
     const g = new Guest(hub.app);
     const res = await g.req({ method: 'POST', url: '/api/search', payload: { q: 'x' } });
