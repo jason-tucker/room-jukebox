@@ -190,10 +190,13 @@ describe('search sources', () => {
   };
 
   it('settings: search.source defaults to page, persists, validates', async () => {
-    expect((await admin('GET', '/api/admin/settings')).json().search).toEqual({ source: 'page' });
+    expect((await admin('GET', '/api/admin/settings')).json().search).toEqual({
+      source: 'page',
+      mirror: true,
+    });
     const api = await admin('PATCH', '/api/admin/settings', { search: { source: 'api-only' } });
     expect(api.statusCode).toBe(200);
-    expect(api.json().search).toEqual({ source: 'api-only' });
+    expect(api.json().search).toEqual({ source: 'api-only', mirror: true });
     // other patches leave it alone; it survives a restart
     await admin('PATCH', '/api/admin/settings', { roomName: 'Den' });
     await hub.restart();
@@ -203,6 +206,7 @@ describe('search sources', () => {
     });
     expect((await admin('GET', '/api/admin/session')).json().settings.search).toEqual({
       source: 'api-only',
+      mirror: true,
     });
     for (const search of [{ source: 'web' }, { unofficialFallback: 'yes' }, {}]) {
       expect((await admin('PATCH', '/api/admin/settings', { search })).statusCode).toBe(400);
@@ -213,11 +217,11 @@ describe('search sources', () => {
     const on = await admin('PATCH', '/api/admin/settings', {
       search: { unofficialFallback: true },
     });
-    expect(on.json().search).toEqual({ source: 'api-first' });
+    expect(on.json().search).toEqual({ source: 'api-first', mirror: true });
     const off = await admin('PATCH', '/api/admin/settings', {
       search: { unofficialFallback: false },
     });
-    expect(off.json().search).toEqual({ source: 'api-only' });
+    expect(off.json().search).toEqual({ source: 'api-only', mirror: true });
   });
 
   it.each([
@@ -226,7 +230,10 @@ describe('search sources', () => {
     ['no search key (pre-0.0.5)', undefined, 'page'],
   ])('migrates a stored %s to source %s', async (_name, stored, source) => {
     await storeSearch(stored);
-    expect((await admin('GET', '/api/admin/settings')).json().search).toEqual({ source });
+    expect((await admin('GET', '/api/admin/settings')).json().search).toEqual({
+      source,
+      mirror: true,
+    });
     const db = new DatabaseSync(join(hub.dataDir, 'data.db'), { readOnly: true });
     try {
       const row = db.prepare('SELECT data FROM settings WHERE id = 1').get() as { data: string };

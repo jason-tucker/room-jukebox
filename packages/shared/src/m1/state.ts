@@ -56,8 +56,11 @@ export const SettingsPublicSchema = z.object({
   publicMode: z.boolean(),
   hubId: IdSchema,
   hubEpoch: z.number().int().nonnegative(),
-  /** Search source (owner setting; default `page`). */
-  search: z.object({ source: SearchSourceSchema }).optional(),
+  /**
+   * Search source (owner setting; default `page`). `mirror`: embedded YouTube browsing through
+   * the hub's `/yt/*` mirror (default true; absent from pre-0.0.9 hubs).
+   */
+  search: z.object({ source: SearchSourceSchema, mirror: z.boolean().optional() }).optional(),
 });
 export type SettingsPublic = z.infer<typeof SettingsPublicSchema>;
 
@@ -65,8 +68,9 @@ export const SettingsPatchSchema = SettingsPublicSchema.partial().extend({
   /** `{ source }`, or the pre-0.0.6 `{ unofficialFallback }` (true → api-first, false → api-only). */
   search: z
     .union([
-      z.object({ source: SearchSourceSchema }),
+      z.object({ source: SearchSourceSchema, mirror: z.boolean().optional() }),
       z.object({ unofficialFallback: z.boolean() }),
+      z.object({ mirror: z.boolean() }),
     ])
     .optional(),
   youtubeApiKey: z.string().nullable().optional(),
@@ -100,7 +104,12 @@ export const GuestStateSchema = z.object({
     maxDurationSec: LimitsSchema.shape.maxDurationSec,
     allowDuplicates: LimitsSchema.shape.allowDuplicates,
   }),
-  flags: z.object({ hasApiKey: z.boolean(), publicMode: z.boolean() }),
+  flags: z.object({
+    hasApiKey: z.boolean(),
+    publicMode: z.boolean(),
+    /** Embedded YouTube browsing (`/yt/*`) is on; absent from pre-0.0.9 hubs. */
+    mirror: z.boolean().optional(),
+  }),
 });
 export type GuestState = z.infer<typeof GuestStateSchema>;
 

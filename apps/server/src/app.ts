@@ -32,6 +32,7 @@ import type { SpikeSession } from './spike/session.ts';
 import type { FetchLike } from './youtube/client.ts';
 import { createYouTubeApi } from './youtube/client.ts';
 import { pacificDay, YouTubeService } from './youtube/service.ts';
+import { registerMirror } from './youtube/mirror.ts';
 import { SuggestService } from './youtube/suggest.ts';
 import { searchUnofficial } from './youtube/unofficial.ts';
 
@@ -116,6 +117,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     ...(options.loggerInstance ? { loggerInstance: options.loggerInstance } : { logger: false }),
     // Passed only when set: the top-level option is deprecated (a warning) in Fastify 5.
     ...(options.disableRequestLogging ? { disableRequestLogging: true } : {}),
+    // The YouTube mirror's `/yt/*` wildcard carries YouTube's long static paths.
+    routerOptions: { maxParamLength: 4096 },
   });
   installErrorHandler(app);
 
@@ -221,6 +224,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await registerAdminRoutes(app, ctx);
   await registerUpdateRoutes(app, ctx, VERSION);
   await registerSetupRoutes(app, ctx);
+  await registerMirror(app, { fetch: fetchImpl, enabled: () => settings.mirrorEnabled(), now });
 
   const spikeHandler = options.spike
     ? await registerSpike(app, {

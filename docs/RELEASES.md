@@ -2,6 +2,23 @@
 
 One section per version, newest first. `scripts/release-notes.mjs` turns the **current** version's section into `apps/desktop/build/release-notes.json` at build time (bundled into the installer), and `scripts/build-win.sh` copies the same text into `latest.yml` as `releaseNotes`. Keep every checklist line short and testable on the laptop or a phone.
 
+## 0.0.9 — 2026-10-15
+
+### Changes
+- Browse YouTube: a big button on the guest page opens YouTube's mobile site inside the jukebox page (passed through the hub). Search there like on YouTube.
+- Tapping a video in Browse asks "Request this song?"; Yes queues it and you stay in YouTube for the next pick.
+- If YouTube doesn't load within 8 seconds the panel closes and the search box below takes over; the owner can turn Browse off in admin → Settings → Search source.
+
+### Test
+- Samsung: tap Browse YouTube; YouTube's search bar shows inside the page.
+- iPhone: tap Browse YouTube; YouTube's search bar shows inside the page.
+- Search inside Browse; suggestions drop down and results appear.
+- Tap a result: the "Request this song?" card shows its title.
+- Tap Request it: "Added: …" shows and YouTube is still open behind it.
+- Tap a second result without reloading; it queues too.
+- Tap Done: the guest page is back; reopening the page opens Browse directly.
+- The search box under Browse still finds and queues a song.
+
 ## 0.0.8 — 2026-10-14
 
 ### Changes

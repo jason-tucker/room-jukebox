@@ -118,6 +118,16 @@ follows the phone's light or dark setting.
    tap **Request it**. A short "Added: …" message confirms it, and the results stay so you can add
    another one.
 
+**Browse YouTube** (the big button at the top) is the quickest way to pick many songs: it opens
+YouTube's own mobile site inside the jukebox page (not the app, not a new tab), passed through the
+hub. Tap YouTube's search bar, search like on YouTube (suggestions and filters work), then tap any
+video: instead of playing, the **Request this song?** card opens with its title; tap
+**Request it** and you are still in YouTube, ready to tap the next one. **Done** at the top closes
+it. The phone remembers that you like Browse and opens it directly next time. If YouTube doesn't
+load within 8 seconds the panel closes with "YouTube didn't load; use the search below" and the
+search box works as before. The owner can turn Browse off (admin → Settings → Search source →
+**Embedded YouTube browsing**).
+
 **Have a link? Paste it** sits under the results: tap **Find on YouTube** (the YouTube app or
 m.youtube.com opens), then in YouTube **Share → Copy link**, come back and tap **Paste link**. If
 the phone refuses to let the page read the clipboard (some browsers on plain `http://`), paste the
@@ -276,6 +286,18 @@ YouTube changes them. The owner can switch search to the official API in the adm
 per key). With a key, the API is also used to check results before they can be requested and to
 import fallback playlists. Playback always uses the official embedded YouTube player, whichever
 search source is chosen.
+
+**How Browse YouTube works.** youtube.com refuses to be shown inside another page, so the hub
+mirrors YouTube's mobile site (m.youtube.com) through its own address under `/yt/`: it fetches each
+page for the phone, removes the headers that block embedding, rewrites YouTube's links to point
+back at the hub, and adds a small script that turns a tap on a video into a request instead of
+playing it. Videos never play inside the mirror. YouTube sees the hub's internet connection, not
+the phone's; YouTube's own cookies for the guest are kept on the phone (scoped to the hub's
+address) and sent back to YouTube, never the jukebox's own cookies. This is not covered by the
+YouTube API terms and very likely conflicts with YouTube's terms of service; it can break whenever
+YouTube changes its site. The owner can turn it off at any time: admin → Settings → Search source →
+untick **Embedded YouTube browsing** (setting `search.mirror`, default on); every `/yt/` address
+then answers 404 and the Browse button disappears from phones.
 
 ## License
 

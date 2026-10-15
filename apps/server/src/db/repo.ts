@@ -55,7 +55,7 @@ export interface SettingsData {
    * Absent in rows written before 0.0.5; `unofficialFallback` only in 0.0.5 rows (migrated to
    * `source` when the settings service starts).
    */
-  search?: { source?: SearchSource; unofficialFallback?: boolean };
+  search?: { source?: SearchSource; unofficialFallback?: boolean; mirror?: boolean };
   /** Owner's release checklist ticks (M1.5); absent until the first tick. */
   checklist?: ChecklistState;
 }

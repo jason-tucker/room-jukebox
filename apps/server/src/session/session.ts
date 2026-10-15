@@ -803,7 +803,11 @@ export class Session {
         maxDurationSec: settings.limits.maxDurationSec,
         allowDuplicates: settings.limits.allowDuplicates,
       },
-      flags: { hasApiKey: this.#d.youtube.hasKey(), publicMode: settings.publicMode },
+      flags: {
+        hasApiKey: this.#d.youtube.hasKey(),
+        publicMode: settings.publicMode,
+        mirror: settings.search?.mirror ?? true,
+      },
     };
   }
 

@@ -11,7 +11,9 @@ import type {
 import type { PlaylistRow, Repos, SettingsData, SettingsRow } from './db/repo.ts';
 
 /** `SettingsPublic` as this server always sends it (`search` is optional in the contract). */
-export type SettingsPublicExt = SettingsPublic & { search: { source: SearchSource } };
+export type SettingsPublicExt = SettingsPublic & {
+  search: { source: SearchSource; mirror: boolean };
+};
 
 /** Search reads YouTube's results page unless the owner picks the Data API. */
 export const DEFAULT_SEARCH_SOURCE: SearchSource = 'page';
@@ -119,6 +121,11 @@ export class SettingsService {
     return storedSearchSource(this.data());
   }
 
+  /** Embedded YouTube browsing through the `/yt/*` mirror (default on). */
+  mirrorEnabled(): boolean {
+    return this.data().search?.mirror ?? true;
+  }
+
   wifiPassword(): string | null {
     const enc = this.row().wifiPasswordEnc;
     if (enc === null) return null;
@@ -191,14 +198,14 @@ export class SettingsService {
       publicMode: d.publicMode,
       hubId: d.hubId,
       hubEpoch: d.hubEpoch,
-      search: { source: this.searchSource() },
+      search: { source: this.searchSource(), mirror: this.mirrorEnabled() },
     };
   }
 
   /**
    * Applies a PATCH. Read-only fields (`hubId`, `hubEpoch`, `fallbackPlaylists`, the `has*` flags
    * and `apiKeyLast4`) are ignored; secrets are encrypted and never echoed. `search` takes
-   * `{ source }` or the legacy `{ unofficialFallback }` boolean.
+   * `{ source, mirror? }`, `{ mirror }` or the legacy `{ unofficialFallback }` boolean.
    */
   patch(p: SettingsPatch): SettingsPublicExt {
     const d = { ...this.data() };
@@ -213,12 +220,15 @@ export class SettingsService {
     if (p.kiosk !== undefined) d.kiosk = p.kiosk;
     if (p.publicMode !== undefined) d.publicMode = p.publicMode;
     if (p.search !== undefined) {
-      d.search = {
-        source:
-          'source' in p.search
-            ? p.search.source
-            : sourceFromLegacyFallback(p.search.unofficialFallback),
-      };
+      const s = p.search;
+      const source =
+        'source' in s
+          ? s.source
+          : 'unofficialFallback' in s
+            ? sourceFromLegacyFallback(s.unofficialFallback)
+            : this.searchSource();
+      const mirror = 'mirror' in s && s.mirror !== undefined ? s.mirror : this.mirrorEnabled();
+      d.search = { source, mirror };
     }
     this.setData(d);
     if (p.youtubeApiKey !== undefined) this.setApiKey(p.youtubeApiKey);
