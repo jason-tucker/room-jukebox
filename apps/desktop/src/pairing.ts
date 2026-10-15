@@ -30,20 +30,16 @@ export function newNonce(): string {
   return randomBytes(16).toString('base64url');
 }
 
+/**
+ * Failure codes the web wizard words (`Setup.tsx` `pairErrorText`): `unreachable` (bad address or
+ * no answer), `bad-password`, `login-throttled` (with `retryAfterSec`), `bad-proof` (the hub
+ * refused us or could not prove it is the hub at that address).
+ */
+export type PairFailureCode = 'unreachable' | 'bad-password' | 'login-throttled' | 'bad-proof';
+
 export type PairOutcome =
   | { ok: true; hubAddress: string; reply: PairReply; protocolMismatch: boolean }
-  | {
-      ok: false;
-      message: string;
-      code:
-        | 'address'
-        | 'unreachable'
-        | 'password'
-        | 'throttled'
-        | 'rejected'
-        | 'bad-proof'
-        | 'bad-reply';
-    };
+  | { ok: false; message: string; code: PairFailureCode; retryAfterSec?: number };
 
 export type FetchFn = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -63,7 +59,7 @@ export async function pairWithHub(p: {
   try {
     hubAddress = normalizeHubAddress(p.hubAddress);
   } catch (err) {
-    return { ok: false, code: 'address', message: (err as Error).message };
+    return { ok: false, code: 'unreachable', message: (err as Error).message };
   }
   const nonceP = p.nonceP ?? newNonce();
   const body: PairBody = {
@@ -86,23 +82,25 @@ export async function pairWithHub(p: {
   const json = (await res.json().catch(() => null)) as unknown;
   if (!res.ok) {
     const err = (json as { error?: { retryAfterSec?: number; message?: string } } | null)?.error;
-    if (res.status === 401) return { ok: false, code: 'password', message: 'Wrong password.' };
+    if (res.status === 401) return { ok: false, code: 'bad-password', message: 'Wrong password.' };
     if (res.status === 429) {
+      const retryAfterSec = err?.retryAfterSec ?? 60;
       return {
         ok: false,
-        code: 'throttled',
-        message: `Too many attempts. Try again in ${err?.retryAfterSec ?? 60} s.`,
+        code: 'login-throttled',
+        message: `Too many attempts. Try again in ${retryAfterSec} s.`,
+        retryAfterSec,
       };
     }
     return {
       ok: false,
-      code: 'rejected',
+      code: 'bad-proof',
       message: err?.message ?? `The hub refused pairing (HTTP ${res.status}).`,
     };
   }
   const parsed = PairReplySchema.safeParse(json);
   if (!parsed.success) {
-    return { ok: false, code: 'bad-reply', message: 'The hub sent an unexpected reply.' };
+    return { ok: false, code: 'bad-proof', message: 'The hub sent an unexpected reply.' };
   }
   const reply = parsed.data;
   const expected = pairProof(reply.householdKey, {
@@ -141,6 +139,21 @@ export function playerAuthProof(p: {
     nonceP: p.nonceP,
     hub: hubEndpoint(p.hubAddress),
   });
+}
+
+/**
+ * The hub's own TV window's `auth` proof: the window's page origin (`http://localhost:<LAN_PORT>`
+ * or `http://127.0.0.1:<LAN_PORT>`) is what its socket dials, so the server's Host-based check
+ * sees the same host and port.
+ */
+export function localPlayerAuthProof(p: {
+  householdKey: string;
+  deviceId: string;
+  hubId: string;
+  pageOrigin: string;
+  nonceP: string;
+}): string {
+  return playerAuthProof({ ...p, hubAddress: p.pageOrigin });
 }
 
 /** Checks the hub's `authOk` proof. */

@@ -3,6 +3,7 @@ import type { WebSocket } from '@fastify/websocket';
 import {
   AuthMessageSchema,
   ClientMessageSchema,
+  ReplicaAckMessageSchema,
   type M2ServerMessage,
   type Role,
   type ServerMessage,
@@ -38,15 +39,7 @@ const QuerySchema = z.object({
   group: z.string().optional(),
 });
 
-/**
- * `replicaAck { snapshotAt }` (player → hub) acknowledges a `replica` message. Server-local until
- * `packages/shared` adds it to **M2ClientMessage** (contract-m2 "Lane clarifications").
- */
-export const ReplicaAckMessageSchema = z.object({
-  type: z.literal('replicaAck'),
-  snapshotAt: z.number().int().nonnegative(),
-});
-
+/** After `authOk`: the M1 player messages plus `replicaAck` (shared **M2ClientMessage**). */
 const PlayerMessageSchema = z.union([ClientMessageSchema, ReplicaAckMessageSchema]);
 
 interface Conn {

@@ -1,50 +1,25 @@
 import { HouseholdKeySchema } from '@room-jukebox/shared';
+import type { HouseholdInfo, JukeboxApi } from 'server/src/app.ts';
 import type { BeaconIdentity } from './beacon';
 import { subkey } from './household';
-import type { PlayerHubView } from './player-lan';
 
 /*
- * ADAPTER for the M2 server surface the server lane adds in parallel. Declared here so this lane
- * compiles against the base server; at merge these collapse onto the server's own types.
- *
- * - `buildApp({ mode: 'player', hub })`: see `player-lan.ts` (probed, stub fallback).
- * - `app.jukebox.household()`: the hub's identity and household key, so the desktop can sign
- *   beacons and compute the hub TV window's own join proof. Expected shape below; when the
- *   method is missing (base server) the hub sends no beacons and `localPlayerAuth` returns null.
+ * The embedded hub's household identity (`app.jukebox.household()`), so the desktop can sign
+ * beacons and compute the hub TV window's own join proof. Null before setup; beacons pause.
  */
 
-export interface HubHousehold {
-  hubId: string;
-  hubEpoch: number;
-  keyEpoch: number;
-  /** base64, 32 bytes. */
-  householdKey: string;
-  roomName: string;
-}
+export type HubHousehold = HouseholdInfo;
 
-/** The M2 additions to `app.jukebox` this lane uses (all optional until the merge). */
-export interface M2JukeboxApi {
-  household?: () => HubHousehold | null;
-}
-
-/** M2 `BuildAppOptions` additions (contract "Desktop ↔ server"). */
-export interface M2BuildAppOptions {
-  mode?: 'hub' | 'player';
-  hub?: PlayerHubView;
-}
-
-export function hubHousehold(api: unknown): HubHousehold | null {
-  const fn = (api as M2JukeboxApi | undefined)?.household;
-  if (typeof fn !== 'function') return null;
+export function hubHousehold(api: JukeboxApi | null): HubHousehold | null {
+  if (!api) return null;
   try {
-    const h = fn.call(api);
+    const h = api.household();
     if (!h || !HouseholdKeySchema.safeParse(h.householdKey).success) return null;
     return h;
   } catch {
     return null;
   }
 }
-
 export function beaconIdentity(h: HubHousehold | null): BeaconIdentity | null {
   if (!h) return null;
   return {

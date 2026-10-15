@@ -34,5 +34,7 @@ export const PairReplySchema = z.object({
   protocolVersion: z.number().int().nonnegative(),
   nonceH: z.string().min(1),
   proof: z.string().min(1),
+  /** The household key's generation (additive, server lane clarification). */
+  keyEpoch: z.number().int().nonnegative().optional(),
 });
 export type PairReply = z.infer<typeof PairReplySchema>;

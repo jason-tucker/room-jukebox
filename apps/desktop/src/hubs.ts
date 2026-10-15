@@ -1,7 +1,6 @@
 import { BeaconSchema } from '@room-jukebox/shared';
 import type { Beacon } from '@room-jukebox/shared';
 import { verifyBeacon } from './household';
-import type { BeaconLastSeen } from './household';
 
 /** A hub is dropped from the list 30 s after its last accepted beacon. */
 export const HUB_EXPIRY_MS = 30_000;
@@ -32,7 +31,8 @@ export type BeaconVerdict =
  */
 export class HubDirectory {
   private readonly hubs = new Map<string, HubEntry>();
-  private readonly seen = new Map<string, BeaconLastSeen>();
+  /** Last accepted `(bootId, counter)` per hubId (the server's `BeaconLastSeen`). */
+  private readonly seen = new Map<string, { bootId: string; counter: number }>();
 
   private readonly beaconKey: () => Buffer | null;
   private readonly now: () => number;
@@ -48,17 +48,24 @@ export class HubDirectory {
     const beacon = parsed.data;
     if (beacon.address !== source) return { ok: false, reason: 'address' };
     const key = this.beaconKey();
-    const last = this.seen.get(beacon.hubId);
     let verified = false;
     if (key) {
-      // Signature alone first, so a bad signature and a replay are told apart in the logs.
-      if (!verifyBeacon(beacon, key, undefined)) return { ok: false, reason: 'bad-sig' };
-      if (!verifyBeacon(beacon, key, last)) return { ok: false, reason: 'replay' };
+      // The server's check: signature, `address` = UDP source, then (bootId, counter) replay.
+      const verdict = verifyBeacon(beacon, key, this.seen, source);
+      if (!verdict.ok) {
+        return {
+          ok: false,
+          reason: verdict.reason === 'address-mismatch' ? 'address' : verdict.reason,
+        };
+      }
       verified = true;
-    } else if (last && last.bootId === beacon.bootId && beacon.counter <= last.counter) {
-      return { ok: false, reason: 'replay' };
+    } else {
+      const last = this.seen.get(beacon.hubId);
+      if (last && last.bootId === beacon.bootId && beacon.counter <= last.counter) {
+        return { ok: false, reason: 'replay' };
+      }
+      this.seen.set(beacon.hubId, { bootId: beacon.bootId, counter: beacon.counter });
     }
-    this.seen.set(beacon.hubId, { bootId: beacon.bootId, counter: beacon.counter });
     const entry: HubEntry = {
       hubId: beacon.hubId,
       roomName: beacon.roomName,

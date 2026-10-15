@@ -30,7 +30,18 @@ export const ReplicaDeltaMessageSchema = z.object({
   changes: z.array(z.unknown()),
 });
 
-export const M2ClientMessageSchema = z.union([ClientMessageSchema, AuthMessageSchema]);
+/** Player → hub after storing a `replica` snapshot. */
+export const ReplicaAckMessageSchema = z.object({
+  type: z.literal('replicaAck'),
+  snapshotAt: z.number().int().nonnegative(),
+});
+export type ReplicaAckMessage = z.infer<typeof ReplicaAckMessageSchema>;
+
+export const M2ClientMessageSchema = z.union([
+  ClientMessageSchema,
+  AuthMessageSchema,
+  ReplicaAckMessageSchema,
+]);
 export type M2ClientMessage = z.infer<typeof M2ClientMessageSchema>;
 
 export const M2ServerMessageSchema = z.union([

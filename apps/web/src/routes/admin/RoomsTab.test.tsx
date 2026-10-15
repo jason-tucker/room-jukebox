@@ -10,6 +10,15 @@ import { replicaLine, RoomsTab } from './RoomsTab.tsx';
 const T = S.admin.rooms;
 const NOW = Date.now();
 
+/** EntryAdmin fields the orphaned list carries (shared **LinkReply**). */
+const orphan = {
+  requesterName: 'Ann',
+  requesterGuestId: 'g1',
+  source: 'request' as const,
+  status: 'queued' as const,
+  enqueuedAt: NOW - 1000,
+};
+
 const ROOMS = {
   rooms: [
     {
@@ -69,23 +78,29 @@ function setup() {
     'GET /api/admin/rooms': () => ({ body: ROOMS }),
     'GET /api/admin/replica/status': () => ({
       body: {
-        snapshotAt: NOW - 5000,
+        lastSentAt: NOW - 5000,
+        bytes: 2048,
         players: [
-          { deviceId: 'den', ackedAt: NOW - 5000 },
-          { deviceId: 'garage', ackedAt: NOW - 600_000 },
+          { deviceId: 'den', lastAckAt: NOW - 4900 },
+          { deviceId: 'garage', lastAckAt: NOW - 600_000 },
         ],
       },
     }),
     'POST /api/admin/rooms/garage/link': () => ({
       body: {
-        ok: true,
+        room: { ...ROOMS.rooms[2], groupId: 'main', linkState: 'linked' },
         orphaned: [
-          { id: 'x1', videoId: 'aaaaaaaaaaa', title: 'Song A' },
-          { id: 'x2', videoId: 'bbbbbbbbbbb', title: 'Song B' },
+          { ...orphan, id: 'x1', videoId: 'aaaaaaaaaaa', title: 'Song A' },
+          { ...orphan, id: 'x2', videoId: 'bbbbbbbbbbb', title: 'Song B' },
         ],
       },
     }),
-    'POST /api/admin/rooms/den/split': () => ({ body: { ok: true } }),
+    'POST /api/admin/rooms/den/split': () => ({
+      body: {
+        room: { ...ROOMS.rooms[1], groupId: 'g-den', linkState: 'independent' },
+        orphaned: [],
+      },
+    }),
     'POST /api/admin/players/den/revoke': () => ({ body: { ok: true } }),
     'POST /api/admin/requests': (init) => ({
       status: 201,
@@ -185,7 +200,16 @@ describe('Admin Rooms tab', () => {
   });
 
   it('replicaLine handles no snapshot yet', () => {
-    expect(replicaLine({ snapshotAt: null })).toBe(T.replicaNone);
-    expect(replicaLine({ snapshotAt: 10, players: [] })).toBe(T.replica(fmtDateTime(10), 0, 0));
+    expect(replicaLine({ lastSentAt: null, players: [] })).toBe(T.replicaNone);
+    expect(replicaLine({ lastSentAt: 10, players: [] })).toBe(T.replica(fmtDateTime(10), 0, 0));
+    expect(
+      replicaLine({
+        lastSentAt: 10,
+        players: [
+          { deviceId: 'a', lastAckAt: 11 },
+          { deviceId: 'b', lastAckAt: null },
+        ],
+      }),
+    ).toBe(T.replica(fmtDateTime(10), 1, 2));
   });
 });

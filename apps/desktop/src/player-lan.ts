@@ -2,16 +2,17 @@ import { createServer } from 'node:http';
 import type { Server } from 'node:http';
 import { M2_PROTOCOL_VERSION } from '@room-jukebox/shared';
 import type { HubJson } from '@room-jukebox/shared';
+import type { PlayerModeHub } from 'server/src/app.ts';
 
 /**
  * Player mode's listener on LAN_PORT (plan §3.2): `GET /hub.json` (open CORS) and 302 redirects
  * of `/`, `/r/*` and `/admin` to the current hub, so a phone that scans the wrong laptop still
  * lands on the party.
  *
- * ADAPTER: the server lane adds `buildApp({ mode: 'player', hub })`. At this lane's base that
- * option does not exist (buildApp would start a full hub), so `startPlayerLan` builds it, probes
- * `GET /hub.json` with `inject`, and falls back to the local stub below when the probe fails.
- * After the merge the probe succeeds and the stub is dead code that can be deleted.
+ * Served by the server's `buildApp({ mode: 'player', hub })` (`serverHubView` adapts the live
+ * view: `verified` becomes the callback that gates `/hub.json` 503 → 200). `startPlayerLan`
+ * probes it with `inject` and keeps the local stub below only as a fallback for a build whose
+ * server lacks player mode.
  */
 
 /** Read live: the page can change the hub address (manual entry) without a restart. */
@@ -37,6 +38,22 @@ interface FastifyLike {
   }): Promise<{ statusCode: number; headers: Record<string, unknown> }>;
   listen(opts: { port: number; host: string }): Promise<unknown>;
   close(): Promise<unknown>;
+}
+
+/** The server's player-mode `hub` option, reading `hub` live on every request. */
+export function serverHubView(hub: PlayerHubView): PlayerModeHub {
+  return {
+    get address() {
+      return hub.address;
+    },
+    get epoch() {
+      return hub.epoch;
+    },
+    get roomName() {
+      return hub.roomName;
+    },
+    verified: () => hub.verified,
+  };
 }
 
 export function hubJson(hub: PlayerHubView): HubJson {
@@ -109,12 +126,12 @@ export function startStubLan(hub: PlayerHubView): LanListener {
 
 export async function startPlayerLan(p: {
   hub: PlayerHubView;
-  build?: (options: { mode: 'player'; hub: PlayerHubView }) => Promise<FastifyLike>;
+  build?: (options: { mode: 'player'; hub: PlayerModeHub }) => Promise<FastifyLike>;
   warn: (message: string) => void;
 }): Promise<LanListener> {
   if (p.build) {
     try {
-      const app = await p.build({ mode: 'player', hub: p.hub });
+      const app = await p.build({ mode: 'player', hub: serverHubView(p.hub) });
       const probe = await app.inject({ method: 'GET', url: '/hub.json' });
       // A JSON answer (200, or 503 before the hub is verified) means the player route set is
       // there; a full hub answers 404 or the SPA's HTML.

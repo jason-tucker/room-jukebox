@@ -4,6 +4,7 @@ import {
   HubChallengeBodySchema,
   HubJsonSchema,
   HouseholdSubkeysSchema,
+  LinkReplySchema,
   LinkStateSchema,
   M2_PROTOCOL_VERSION,
   M2ClientMessageSchema,
@@ -71,6 +72,8 @@ describe('m2 schemas', () => {
     };
     expect(PairReplySchema.safeParse(reply).success).toBe(true);
     expect(PairReplySchema.safeParse({ ...reply, householdKey: 'short' }).success).toBe(false);
+    expect(PairReplySchema.safeParse({ ...reply, keyEpoch: 3 }).success).toBe(true);
+    expect(PairReplySchema.safeParse({ ...reply, keyEpoch: -1 }).success).toBe(false);
     expect(HouseholdSubkeysSchema.safeParse('rj/wrap').success).toBe(true);
     expect(HouseholdSubkeysSchema.safeParse('rj/other').success).toBe(false);
   });
@@ -119,6 +122,8 @@ describe('m2 schemas', () => {
     expect(
       RoomsReplySchema.safeParse({ rooms: [{ ...room, linkState: 'x' }], groups: [] }).success,
     ).toBe(false);
+    expect(LinkReplySchema.safeParse({ room, orphaned: [] }).success).toBe(true);
+    expect(LinkReplySchema.safeParse({ orphaned: [] }).success).toBe(false);
   });
 
   it('replica', () => {
@@ -126,6 +131,13 @@ describe('m2 schemas', () => {
     expect(
       ReplicaSnapshotSchema.safeParse({ ...snapshot, tombstones: [{ table: 't' }] }).success,
     ).toBe(false);
+  });
+
+  it('replicaAck is a client message', () => {
+    expect(M2ClientMessageSchema.safeParse({ type: 'replicaAck', snapshotAt: 10 }).success).toBe(
+      true,
+    );
+    expect(M2ClientMessageSchema.safeParse({ type: 'replicaAck' }).success).toBe(false);
   });
 
   it('hub', () => {

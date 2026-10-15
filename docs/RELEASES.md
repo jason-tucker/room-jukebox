@@ -2,6 +2,29 @@
 
 One section per version, newest first. `scripts/release-notes.mjs` turns the **current** version's section into `apps/desktop/build/release-notes.json` at build time (bundled into the installer), and `scripts/build-win.sh` copies the same text into `latest.yml` as `releaseNotes`. Keep every checklist line short and testable on the laptop or a phone.
 
+## 0.0.10 — 2026-10-15
+
+### Changes
+- Second laptop: install the same app and choose Player. It pairs with the hub laptop by the owner password, checks the hub's signed beacons and proves itself on every join.
+- Join popup on the player's TV: "Joining Basement in 10…" with a 10-second countdown; Stay separate is remembered for next time.
+- Linked rooms share one queue and play the same video; a separate room gets its own queue and its own QR code.
+- Admin → Rooms tab: every room with Link, Split and Revoke; songs left waiting in a room you link back are listed so you can re-add them.
+- The hub copies its settings and queue to each player in the background.
+- Admin → What's new → Updates card shows "Next check at".
+- The project now lives in a GitHub repository.
+
+### Test
+- Install the same .exe on laptop B and choose Player.
+- Type the owner password on B; B's TV shows "Joining Basement in 10…".
+- Both TVs play the same video within a second of each other.
+- Press Stay separate on B, then request a song through B's own QR code.
+- Admin → Rooms shows both rooms.
+- Link B back in admin and re-add the orphaned song from the list.
+- Pause B's video by hand for 30 s: B shows Delayed, then rejoins.
+- Quit the hub app: B shows "Looking for the Basement laptop…" and recovers when the hub returns.
+- Revoke B in admin: B asks for the owner password again.
+- The TV announced 0.0.10 by itself.
+
 ## 0.0.9 — 2026-10-15
 
 ### Changes

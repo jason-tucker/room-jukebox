@@ -740,7 +740,8 @@ class MockHub {
       return;
     }
     if (msg.type === 'replicaAck') {
-      if (s.deviceId) this.replicaAcks.set(s.deviceId, Number(msg.snapshotAt));
+      // Like the hub: the time the ack arrived (compared with the last send).
+      if (s.deviceId) this.replicaAcks.set(s.deviceId, Date.now());
       return;
     }
     if (msg.type === 'ping') {
@@ -834,13 +835,13 @@ class MockHub {
         });
       case 'GET /api/admin/replica/status':
         return json(200, {
-          snapshotAt: this.snapshotAt,
+          lastSentAt: this.snapshotAt,
+          bytes: 4096,
           players: this.rooms
             .filter((r) => r.deviceId !== 'mock-hub')
             .map((r) => ({
               deviceId: r.deviceId,
-              name: r.name,
-              ackedAt: this.replicaAcks.get(r.deviceId) ?? null,
+              lastAckAt: this.replicaAcks.get(r.deviceId) ?? null,
             })),
         });
       case 'GET /api/videos/resolve': {
@@ -1087,9 +1088,11 @@ class MockHub {
       if (m[2] === 'link') {
         const orphaned = this.link(id);
         if (orphaned === null) return err(404, 'not-found', 'No such room');
-        return json(200, { ok: true, orphaned: orphaned.map((e) => this.#pub(e)) });
+        return json(200, { room: this.rooms.find((r) => r.deviceId === id), orphaned });
       }
-      return this.split(id) ? json(200, { ok: true }) : err(404, 'not-found', 'No such room');
+      return this.split(id)
+        ? json(200, { room: this.rooms.find((r) => r.deviceId === id), orphaned: [] })
+        : err(404, 'not-found', 'No such room');
     }
     m = p.match(/^\/api\/admin\/players\/([^/]+)\/revoke$/);
     if (m && method === 'POST') {

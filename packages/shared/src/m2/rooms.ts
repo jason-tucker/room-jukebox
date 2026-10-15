@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { EpochMsSchema, IdSchema } from '../m1/common.ts';
+import { EntryAdminSchema } from '../m1/entries.ts';
 
 export const LinkStateSchema = z.enum(['linked', 'independent']);
 export type LinkState = z.infer<typeof LinkStateSchema>;
@@ -29,3 +30,13 @@ export const RoomsReplySchema = z.object({
   groups: z.array(GroupSchema),
 });
 export type RoomsReply = z.infer<typeof RoomsReplySchema>;
+
+/**
+ * `POST /api/rooms/me` and `/api/admin/rooms/:deviceId/link|split`: the room after the change and,
+ * on link, the merged group's entries (not moved; listed for re-adding). Empty on split.
+ */
+export const LinkReplySchema = z.object({
+  room: RoomSchema,
+  orphaned: z.array(EntryAdminSchema),
+});
+export type LinkReply = z.infer<typeof LinkReplySchema>;

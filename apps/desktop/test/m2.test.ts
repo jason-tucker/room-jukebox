@@ -16,12 +16,26 @@ import {
   subkey,
   verifyBeacon,
 } from '../src/household';
+import type { BeaconLastSeen } from '../src/household';
+import {
+  deriveKeys,
+  joinAckProof as serverJoinAckProof,
+  joinProof as serverJoinProof,
+  pairProof as serverPairProof,
+} from 'server/src/household.ts';
 import { HUB_EXPIRY_MS, HubDirectory } from '../src/hubs';
-import { normalizeHubAddress, pairWithHub, playerAuthProof, verifyAuthOk } from '../src/pairing';
+import {
+  localPlayerAuthProof,
+  normalizeHubAddress,
+  pairWithHub,
+  playerAuthProof,
+  verifyAuthOk,
+} from '../src/pairing';
 import type { FetchFn } from '../src/pairing';
 import { hubJson, redirectTarget, startPlayerLan, startStubLan } from '../src/player-lan';
 import type { PlayerHubView } from '../src/player-lan';
 import { readReplica, replicaInfo, writeReplica } from '../src/replica-store';
+import { buildApp } from 'server/src/app.ts';
 
 // Fixed household key: 32 bytes of 0x01.
 const KEY = Buffer.alloc(32, 1).toString('base64');
@@ -96,16 +110,33 @@ describe('household crypto (contract formulas, fixed-key fixtures)', () => {
     expect(signBeacon(reordered, key).sig).toBe(beacon.sig);
   });
 
-  it('verifies beacons: signature, tamper, wrong key, (bootId, counter) replay', () => {
+  it('verifies beacons: signature, tamper, wrong key, source address, (bootId, counter) replay', () => {
     const key = subkey(KEY, 'rj/beacon');
     const b1 = signBeacon(unsigned, key);
-    expect(verifyBeacon(b1, key, undefined)).toBe(true);
-    expect(verifyBeacon({ ...b1, roomName: 'Attic' }, key, undefined)).toBe(false);
-    expect(verifyBeacon(b1, subkey(OTHER_KEY, 'rj/beacon'), undefined)).toBe(false);
-    expect(verifyBeacon(b1, key, { bootId: 'boot-1', counter: 1 })).toBe(false);
-    expect(verifyBeacon(b1, key, { bootId: 'boot-1', counter: 0 })).toBe(true);
+    const src = '192.168.1.5';
+    const seen = (bootId?: string, counter = 0): BeaconLastSeen =>
+      new Map(bootId === undefined ? [] : [['hub-1', { bootId, counter }]]);
+    expect(verifyBeacon(b1, key, seen(), src)).toMatchObject({ ok: true });
+    expect(verifyBeacon({ ...b1, roomName: 'Attic' }, key, seen(), src)).toEqual({
+      ok: false,
+      reason: 'bad-sig',
+    });
+    expect(verifyBeacon(b1, subkey(OTHER_KEY, 'rj/beacon'), seen(), src)).toEqual({
+      ok: false,
+      reason: 'bad-sig',
+    });
+    expect(verifyBeacon(b1, key, seen(), '192.168.1.66')).toEqual({
+      ok: false,
+      reason: 'address-mismatch',
+    });
+    expect(verifyBeacon(b1, key, seen('boot-1', 1), src)).toEqual({ ok: false, reason: 'replay' });
+    expect(verifyBeacon(b1, key, seen('boot-1', 0), src)).toMatchObject({ ok: true });
     // A restarted hub (new bootId) counts from 1 again and is accepted.
-    expect(verifyBeacon(b1, key, { bootId: 'boot-0', counter: 999 })).toBe(true);
+    expect(verifyBeacon(b1, key, seen('boot-0', 999), src)).toMatchObject({ ok: true });
+    // Accepting records the pair.
+    const last = seen();
+    verifyBeacon(b1, key, last, src);
+    expect(last.get('hub-1')).toEqual({ bootId: 'boot-1', counter: 1 });
   });
 });
 
@@ -282,24 +313,28 @@ describe('pairing', () => {
     });
   });
 
-  it('maps errors: wrong password, throttle, malformed reply, unreachable, bad address', async () => {
+  it('maps errors to the web wizard codes: bad-password, login-throttled, bad-proof, unreachable', async () => {
     expect(await pair(respond(401, { error: { code: 'unauthorized' } }))).toMatchObject({
       ok: false,
-      code: 'password',
+      code: 'bad-password',
     });
     expect(await pair(respond(429, { error: { retryAfterSec: 42 } }))).toMatchObject({
       ok: false,
-      code: 'throttled',
+      code: 'login-throttled',
+      retryAfterSec: 42,
       message: expect.stringContaining('42') as unknown,
     });
-    expect(await pair(respond(200, { ok: true }))).toMatchObject({ ok: false, code: 'bad-reply' });
+    expect(await pair(respond(200, { ok: true }))).toMatchObject({ ok: false, code: 'bad-proof' });
+    expect(
+      await pair(respond(403, { error: { code: 'not-household', message: 'Not on this Wi-Fi' } })),
+    ).toMatchObject({ ok: false, code: 'bad-proof', message: 'Not on this Wi-Fi' });
     expect(await pair(() => Promise.reject(new Error('ECONNREFUSED')))).toMatchObject({
       ok: false,
       code: 'unreachable',
     });
     expect(await pair(respond(200, reply()), 'ftp://x')).toMatchObject({
       ok: false,
-      code: 'address',
+      code: 'unreachable',
     });
   });
 
@@ -329,6 +364,67 @@ describe('join proofs', () => {
       }),
     ).not.toBe(proof);
     expect(hubEndpoint('http://localhost:8080')).toEqual({ host: 'localhost', port: 8080 });
+  });
+
+  it("the hub's own TV proves for its page origin, matching the server's joinProof", () => {
+    const nonceP = 'np-local';
+    const desktop = localPlayerAuthProof({
+      householdKey: KEY,
+      deviceId: 'tv-1',
+      hubId: 'hub-1',
+      pageOrigin: 'http://localhost:8080',
+      nonceP,
+    });
+    const server = serverJoinProof(deriveKeys(KEY).playerProof, {
+      deviceId: 'tv-1',
+      hubId: 'hub-1',
+      nonceP,
+      hubAddress: 'localhost',
+      hubPort: 8080,
+    });
+    expect(desktop).toBe(server);
+    // The server's own helper (`app.jukebox.localPlayerAuth` formula) agrees for 127.0.0.1 too.
+    expect(
+      localPlayerAuthProof({
+        householdKey: KEY,
+        deviceId: 'tv-1',
+        hubId: 'hub-1',
+        pageOrigin: 'http://127.0.0.1:8080',
+        nonceP,
+      }),
+    ).toBe(
+      serverJoinProof(deriveKeys(KEY).playerProof, {
+        deviceId: 'tv-1',
+        hubId: 'hub-1',
+        nonceP,
+        hubAddress: '127.0.0.1',
+        hubPort: 8080,
+      }),
+    );
+  });
+
+  it('pair and join-ack proofs match the server implementation', () => {
+    const keys = deriveKeys(KEY);
+    expect(
+      pairProof(KEY, {
+        hubId: 'hub-1',
+        deviceId: 'dev-1',
+        nonceP: 'np',
+        nonceH: 'nh',
+        hub: { host: '192.168.1.5', port: 8080 },
+      }),
+    ).toBe(
+      serverPairProof(keys.hubProof, {
+        hubId: 'hub-1',
+        deviceId: 'dev-1',
+        nonceP: 'np',
+        nonceH: 'nh',
+        hubAddress: '192.168.1.5',
+        hubPort: 8080,
+      }),
+    );
+    const ack = { hubId: 'hub-1', deviceId: 'dev-1', nonceP: 'np', nonceH: 'nh' };
+    expect(joinAckProof(KEY, ack)).toBe(serverJoinAckProof(keys.hubProof, ack));
   });
 
   it('verifies authOk with the hub-proof subkey', () => {
@@ -503,5 +599,40 @@ describe('player LAN listener (stub)', () => {
     expect(closed).toEqual(['404', '200']);
     const failing = () => Promise.reject(new Error('boom'));
     expect((await startPlayerLan({ hub, build: failing, warn })).kind).toBe('stub');
+  });
+  it("the server's player mode is used and its /hub.json follows the view's verified flag", async () => {
+    const view: { -readonly [K in keyof PlayerHubView]: PlayerHubView[K] } = {
+      ...hub,
+      verified: false,
+    };
+    const warnings: string[] = [];
+    const lan = await startPlayerLan({
+      hub: view,
+      build: (o) => buildApp(o),
+      warn: (m) => warnings.push(m),
+    });
+    expect(lan.kind).toBe('server');
+    expect(warnings).toEqual([]);
+    close = lan.close;
+    const port = 43000 + Math.floor(Math.random() * 2000);
+    await lan.listen(port, '127.0.0.1');
+    const base = `http://127.0.0.1:${port}`;
+    const before = await fetch(`${base}/hub.json`);
+    expect(before.status).toBe(503);
+    expect(before.headers.get('access-control-allow-origin')).toBe('*');
+    expect((await fetch(`${base}/`, { redirect: 'manual' })).status).toBe(503);
+    view.verified = true;
+    view.roomName = 'Den';
+    const after = await fetch(`${base}/hub.json`);
+    expect(after.status).toBe(200);
+    expect(await after.json()).toEqual({
+      hubAddress: 'http://192.168.1.5:8080',
+      hubEpoch: 3,
+      protocolVersion: 2,
+      roomName: 'Den',
+    });
+    const r = await fetch(`${base}/r/g1?x=1`, { redirect: 'manual' });
+    expect(r.status).toBe(302);
+    expect(r.headers.get('location')).toBe('http://192.168.1.5:8080/r/g1?x=1');
   });
 });

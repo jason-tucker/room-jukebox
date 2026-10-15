@@ -106,7 +106,7 @@ export async function registerM2Routes(app: FastifyInstance, ctx: AppContext): P
         hubAddress,
         hubPort,
       }),
-      // Additive (not in shared PairReply yet): the key's generation, for the player's beacons.
+      // The key's generation, so the player stores the right epoch.
       keyEpoch: ctx.household.keyEpoch(),
     };
     return reply;

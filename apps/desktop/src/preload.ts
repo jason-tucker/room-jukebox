@@ -59,8 +59,12 @@ contextBridge.exposeInMainWorld('jukebox', {
   // ---- M2 (docs/contract-m2.md). All origin-checked in main; player-only calls resolve to
   // null/false in hub mode and vice versa.
 
-  /** `'hub' | 'player'`: the role of this run. */
-  mode: (): Promise<'hub' | 'player'> => ipcRenderer.invoke('jukebox:mode'),
+  /** The role of this run plus the remembered link state and (player) hub address. */
+  mode: (): Promise<{
+    mode: 'hub' | 'player';
+    linkState: 'linked' | 'independent';
+    hubAddress: string | null;
+  }> => ipcRenderer.invoke('jukebox:mode'),
   /** Player first run / re-pair: POST <hub>/api/pair, verify the proof, store, switch to player
    * mode and reload the TV window. `{ ok: false, code, message }` on failure. */
   pair: (input: {
@@ -69,7 +73,13 @@ contextBridge.exposeInMainWorld('jukebox', {
     deviceName?: string;
   }): Promise<
     | { ok: true; roomName: string; hubAddress: string; protocolMismatch: boolean }
-    | { ok: false; code?: string; message: string }
+    | {
+        ok: false;
+        /** `bad-password` | `unreachable` | `bad-proof` | `login-throttled` (+ `retryAfterSec`). */
+        code?: string;
+        message: string;
+        retryAfterSec?: number;
+      }
   > => ipcRenderer.invoke('jukebox:pair', input),
   /** Hubs heard via beacons (verified with our key; unverified while unpaired), newest first. */
   hubs: (): Promise<HubEntry[]> => ipcRenderer.invoke('jukebox:hubs'),

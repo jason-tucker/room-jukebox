@@ -77,10 +77,10 @@ export interface JukeboxBridge {
   hubs?: () => HeardHub[] | Promise<HeardHub[]>;
   /** Called with the full list whenever it changes; returns an unsubscribe function. */
   onHubs?: (cb: (hubs: HeardHub[]) => void) => (() => void) | undefined;
-  /** Player mode: the `auth` proof for this nonce. */
-  playerAuth?: (nonceP: string) => Promise<PlayerProof>;
-  /** Hub mode: the same proof for the hub's own TV. */
-  localPlayerAuth?: (nonceP: string) => Promise<PlayerProof>;
+  /** Player mode: the `auth` proof for this nonce (null when this laptop is not paired). */
+  playerAuth?: (nonceP: string) => Promise<PlayerProof | null>;
+  /** Hub mode: the same proof for the hub's own TV (null before setup). */
+  localPlayerAuth?: (nonceP: string) => Promise<PlayerProof | null>;
   /** Checks the hub's `authOk` proof. */
   verifyAuthOk?: (nonceP: string, nonceH: string, proof: string) => Promise<boolean>;
   setLinkState?: (s: LinkState) => unknown;

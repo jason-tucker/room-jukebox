@@ -182,6 +182,32 @@ describe('/tv player mode handshake', () => {
     expect(auth.deviceId).toBe('den');
   });
 
+  it('every reconnect asks for a new proof with a fresh nonce (the hub refuses reuse)', async () => {
+    const b = installBridge();
+    stubHub();
+    render(<Tv />);
+    const { ws, auth } = await joinHub();
+    act(() => ws.close());
+    await waitFor(() => expect(FakeWebSocket.instances.length).toBe(2), { timeout: 3000 });
+    const ws2 = FakeWebSocket.last();
+    const auth2 = await openAndAuth(ws2);
+    expect(auth2.nonceP).not.toBe(auth.nonceP);
+    expect(auth2.proof).toBe(`p:${auth2.nonceP}`);
+    expect(b.playerAuth).toHaveBeenCalledTimes(2);
+    expect(b.playerAuth).toHaveBeenLastCalledWith(auth2.nonceP);
+  });
+
+  it('closes the socket when the desktop has no proof (not paired)', async () => {
+    installBridge({ playerAuth: vi.fn(() => Promise.resolve(null)) });
+    stubHub();
+    render(<Tv />);
+    await waitFor(() => expect(FakeWebSocket.instances.length).toBe(1));
+    const ws = FakeWebSocket.last();
+    act(() => ws.open());
+    await waitFor(() => expect(ws.readyState).toBe(FakeWebSocket.CLOSED));
+    expect(ws.sent.some((m) => (m as { type: string }).type === 'auth')).toBe(false);
+  });
+
   it('hub mode uses localPlayerAuth and goes to this origin', async () => {
     window.history.replaceState(null, '', '/tv?player=hubtv&token=t');
     const b = installBridge();

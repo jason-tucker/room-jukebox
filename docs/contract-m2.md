@@ -54,3 +54,11 @@ Appended by the server lane; nothing above is changed. Implemented in `apps/serv
 - **Replica rows** are the raw SQLite rows (snake_case columns). `settings` = `{ data, apiKeyWrapped, apiKeyLast4, wifiPasswordWrapped, guestSecretWrapped, noticeAcceptedAt }`; the household key is never included. `quotaLog` covers the last 7 days. Tombstones: those written since the snapshot the player last acknowledged (all within 30 days before the first ack); `{ table: 'guests', id }` means "forget this guest" (drop attributions in replicated history and queue).
 - **`/hub.json`** `hubAddress` is an origin (`http://<chosen address>:<lanPort>`). **Player mode** (`buildApp({ mode: 'player', hub: { address, port?, epoch, roomName } })`) opens no database and has no `app.jukebox`; it serves `/healthz`, `/hub.json` and 302s `/`, `/admin`, `/admin/*`, `/r/*` to the hub origin (path and query kept).
 - `protocolVersion` reported by the hub (healthz, `/api/version`, states) is now `2`.
+
+## Integration notes (0.0.10, 2026-10-15)
+
+- Shared now carries `PairReply.keyEpoch` (optional), `ReplicaAckMessageSchema` in **M2ClientMessage** (the server-local copy is gone) and **LinkReply** `{ room, orphaned: EntryAdmin[] }` (link, split and `POST /api/rooms/me`).
+- The desktop re-exports `subkey`, `hmacProof`, `signBeacon`, `verifyBeacon`, `canonicalJson` from `apps/server/src/household.ts`; one implementation for hub and player.
+- `buildApp({ mode: 'player', hub })` takes `hub.verified?: () => boolean`; until it returns true (and while `hub.address` is empty) `/hub.json` and the redirects answer `503 not-joined`. `hub` fields are read per request.
+- Desktop IPC: `pair()` fails with `bad-password` | `unreachable` | `bad-proof` | `login-throttled` (+ `retryAfterSec`); `mode()` returns `{ mode, linkState, hubAddress }`; `verifyAuthOk` also works for the hub's own TV (hub mode, hub key).
+- `GET /api/admin/replica/status` is read by the web as `{ lastSentAt, bytes, players: [{ deviceId, lastAckAt }] }`; a player is up to date when `lastAckAt >= lastSentAt`.

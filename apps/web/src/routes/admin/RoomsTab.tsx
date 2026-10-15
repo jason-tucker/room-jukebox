@@ -13,10 +13,11 @@ export const ROOMS_POLL_MS = 10_000;
 
 /** "Copy … made 9:41 PM; 1 of 2 up to date", or the no-copy line. */
 export function replicaLine(r: ReplicaStatus): string {
-  if (r.snapshotAt === null || r.snapshotAt === undefined) return T.replicaNone;
-  const players = r.players ?? [];
-  const ok = players.filter((p) => (p.ackedAt ?? -1) >= r.snapshotAt!).length;
-  return T.replica(fmtDateTime(r.snapshotAt), ok, players.length);
+  const sent = r.lastSentAt;
+  if (sent === null) return T.replicaNone;
+  // Up to date: acknowledged at or after the last send.
+  const ok = r.players.filter((p) => p.lastAckAt !== null && p.lastAckAt >= sent).length;
+  return T.replica(fmtDateTime(sent), ok, r.players.length);
 }
 
 interface Orphans {
@@ -65,7 +66,7 @@ export function RoomsTab({ state, run, push }: TabProps) {
     const r = await run(api.admin.linkRoom(room.deviceId), T.linkedDone(room.name));
     setBusy(null);
     if (!r.ok) return;
-    const entries = r.data.orphaned ?? [];
+    const entries = r.data.orphaned;
     setOrphans(entries.length > 0 ? { room: room.name, entries } : null);
     refresh();
   };

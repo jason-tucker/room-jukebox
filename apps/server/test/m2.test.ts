@@ -780,4 +780,40 @@ describe('player mode', () => {
       await app.close();
     }
   });
+
+  it('answers 503 until the hub is verified, and reads the hub view per request', async () => {
+    let ok = false;
+    let address = '';
+    const hub = {
+      get address() {
+        return address;
+      },
+      epoch: 4,
+      roomName: 'Basement',
+      verified: () => ok,
+    };
+    const app = await buildApp({ mode: 'player', hub });
+    try {
+      const before = await app.inject({ url: '/hub.json' });
+      expect(before.statusCode).toBe(503);
+      expect(before.headers['access-control-allow-origin']).toBe('*');
+      expect(before.json()).toMatchObject({ error: { code: 'not-joined' } });
+      expect((await app.inject({ url: '/' })).statusCode).toBe(503);
+      ok = true;
+      // Verified but no address yet: still not joined.
+      expect((await app.inject({ url: '/hub.json' })).statusCode).toBe(503);
+      address = 'http://192.168.1.21:8080';
+      const after = await app.inject({ url: '/hub.json' });
+      expect(after.statusCode).toBe(200);
+      expect(after.json()).toMatchObject({ hubAddress: 'http://192.168.1.21:8080', hubEpoch: 4 });
+      const r = await app.inject({ url: '/r/main' });
+      expect(r.statusCode).toBe(302);
+      expect(r.headers.location).toBe('http://192.168.1.21:8080/r/main');
+      // `/healthz` answers regardless.
+      ok = false;
+      expect((await app.inject({ url: '/healthz' })).statusCode).toBe(200);
+    } finally {
+      await app.close();
+    }
+  });
 });

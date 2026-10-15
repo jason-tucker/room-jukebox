@@ -14,7 +14,7 @@ import type {
 } from '@room-jukebox/shared';
 import { M2_PROTOCOL_VERSION } from '@room-jukebox/shared';
 import Fastify from 'fastify';
-import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
+import type { FastifyBaseLogger, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import pkg from '../package.json' with { type: 'json' };
 import { AdminAuth } from './auth/admin.ts';
 import type { AppContext, AppHooks, UpdaterApi } from './context.ts';
@@ -71,6 +71,12 @@ export interface PlayerModeHub {
   port?: number;
   epoch: number;
   roomName: string;
+  /**
+   * False until the player verified the hub's `authOk` (contract §1): `/hub.json` answers 503
+   * and nothing is redirected. Absent: always verified. The fields above are read per request,
+   * so a live view (getters) is followed without a rebuild.
+   */
+  verified?: () => boolean;
 }
 
 export interface BuildAppOptions {
@@ -393,7 +399,13 @@ async function buildPlayerApp(options: BuildAppOptions): Promise<FastifyInstance
     ...(options.disableRequestLogging ? { disableRequestLogging: true } : {}),
   });
   installErrorHandler(app);
-  const origin = hubOrigin(hub.address, hub.port);
+  const verified = () => (hub.verified ? hub.verified() : true) && hub.address !== '';
+  const origin = () => hubOrigin(hub.address, hub.port);
+  const notJoined = (reply: FastifyReply) =>
+    reply
+      .code(503)
+      .header('Cache-Control', 'no-store')
+      .send({ error: { code: 'not-joined', message: 'This laptop has not joined its hub yet.' } });
 
   app.get('/healthz', async (): Promise<HealthReply> => ({
     ok: true,
@@ -404,18 +416,18 @@ async function buildPlayerApp(options: BuildAppOptions): Promise<FastifyInstance
 
   app.get('/hub.json', async (_request, reply) => {
     void reply.header('Access-Control-Allow-Origin', '*');
+    if (!verified()) return notJoined(reply);
+    void reply.header('Cache-Control', 'no-store');
     return {
-      hubAddress: origin,
+      hubAddress: origin(),
       hubEpoch: hub.epoch,
       protocolVersion: M2_PROTOCOL_VERSION,
       roomName: hub.roomName,
     };
   });
 
-  const redirect = async (
-    request: { url: string },
-    reply: { redirect(url: string, code?: number): unknown },
-  ) => reply.redirect(`${origin}${request.url}`, 302);
+  const redirect = async (request: FastifyRequest, reply: FastifyReply) =>
+    verified() ? reply.redirect(`${origin()}${request.url}`, 302) : notJoined(reply);
   app.get('/', redirect);
   app.get('/admin', redirect);
   app.get('/admin/*', redirect);

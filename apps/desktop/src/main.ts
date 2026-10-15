@@ -27,18 +27,23 @@ import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import publicKeyPem from '../build/release-public.pem';
 import { buildApp } from 'server/src/app.ts';
-import type { BuildAppOptions } from 'server/src/app.ts';
+import type { BuildAppOptions, JukeboxApi } from 'server/src/app.ts';
 import { parseArgs } from './args';
 import type { CliOptions, Mode } from './args';
 import { startBroadcaster, startListener } from './beacon';
-import { hubEndpoint, joinProof, subkey } from './household';
+import { subkey } from './household';
 import { HubDirectory } from './hubs';
-import { normalizeHubAddress, pairWithHub, playerAuthProof, verifyAuthOk } from './pairing';
+import {
+  localPlayerAuthProof,
+  normalizeHubAddress,
+  pairWithHub,
+  playerAuthProof,
+  verifyAuthOk,
+} from './pairing';
 import { startPlayerLan } from './player-lan';
 import type { LanListener, PlayerHubView } from './player-lan';
 import { replicaInfo, writeReplica } from './replica-store';
 import { beaconIdentity, hubHousehold } from './server-adapter';
-import type { M2BuildAppOptions } from './server-adapter';
 import { loadState, openSecret, saveState, sealSecret } from './desktop-state';
 import type { DesktopState, SecretCodec } from './desktop-state';
 import { pickTvDisplay, tvConnected } from './display';
@@ -131,7 +136,7 @@ let hubVerified = false;
 /** Closes whatever listeners the current role started (hub server or player listeners). */
 let stopRuntime: (() => Promise<void>) | null = null;
 /** Hub: the embedded server's `app.jukebox` (household identity for beacons). */
-let hubApi: unknown = null;
+let hubApi: JukeboxApi | null = null;
 let updateRequiredSince: number | null = null;
 let mode: WindowMode = { fullscreen: true, kiosk: false, displayId: undefined };
 /** The owner left fullscreen through the tray: no re-assert until *Show TV*. */
@@ -954,7 +959,7 @@ async function startHub(root: string): Promise<boolean> {
   log.info(`hub server listening on [::]:${LAN_PORT} (dual-stack)`);
   hubApi = server.jukebox;
   if (!hubHousehold(hubApi)) {
-    log.warn('server has no household identity yet (app.jukebox.household): beacons are paused');
+    log.info('no household identity yet (setup pending): beacons start after setup');
   }
   const broadcaster = startBroadcaster({
     identity: () => beaconIdentity(hubHousehold(hubApi)),
@@ -1002,7 +1007,7 @@ async function startPlayer(root: string): Promise<boolean> {
   const lan: LanListener = await startPlayerLan({
     hub: playerHubView,
     build: async (m2) => {
-      const options: HubOptions & M2BuildAppOptions = {
+      const options: HubOptions = {
         ...m2,
         dataDir: join(app.getPath('userData'), 'data'),
         loggerInstance: fastifyLogger(),
@@ -1095,7 +1100,16 @@ function str(v: unknown): string | undefined {
 }
 
 function registerM2Ipc(root: string): void {
-  ipcMain.handle('jukebox:mode', (e) => (fromPage(e) ? runMode : undefined));
+  // The object form the web reads (`DesktopMode`): role plus what this laptop remembers.
+  ipcMain.handle('jukebox:mode', (e) =>
+    fromPage(e)
+      ? {
+          mode: runMode,
+          linkState: state.linkState ?? 'linked',
+          hubAddress: runMode === 'player' ? (hubAddress() ?? null) : null,
+        }
+      : undefined,
+  );
   ipcMain.handle('jukebox:hubs', (e) => (fromPage(e) ? hubs.list() : undefined));
   ipcMain.handle('jukebox:linkState', (e) =>
     fromPage(e) ? (state.linkState ?? 'linked') : undefined,
@@ -1110,7 +1124,9 @@ function registerM2Ipc(root: string): void {
     const r = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
     const password = typeof r.password === 'string' ? r.password : '';
     const address = str(r.hubAddress) ?? hubAddress() ?? '';
-    if (!password) return { ok: false, message: 'Enter the owner password.' };
+    if (!password) {
+      return { ok: false, code: 'bad-password', message: 'Enter the owner password.' };
+    }
     const outcome = await pairWithHub({
       hubAddress: address,
       password,
@@ -1120,7 +1136,12 @@ function registerM2Ipc(root: string): void {
     });
     if (!outcome.ok) {
       log.warn(`pairing with ${address} failed: ${outcome.code}`);
-      return { ok: false, code: outcome.code, message: outcome.message };
+      return {
+        ok: false,
+        code: outcome.code,
+        message: outcome.message,
+        ...(outcome.retryAfterSec !== undefined ? { retryAfterSec: outcome.retryAfterSec } : {}),
+      };
     }
     const { reply } = outcome;
     persist({
@@ -1131,7 +1152,7 @@ function registerM2Ipc(root: string): void {
       roomName: reply.roomName,
       deviceToken: sealSecret(codec, reply.deviceToken),
       householdKey: sealSecret(codec, reply.householdKey),
-      keyEpoch: 0,
+      keyEpoch: reply.keyEpoch ?? 0,
     });
     log.info(`paired with hub ${reply.hubId} (${reply.roomName}) at ${outcome.hubAddress}`);
     if (reply.protocolVersion > M2_PROTOCOL_VERSION) {
@@ -1180,9 +1201,24 @@ function registerM2Ipc(root: string): void {
   });
 
   ipcMain.handle('jukebox:verifyAuthOk', (e, nonceP: unknown, nonceH: unknown, proof: unknown) => {
+    if (!fromPage(e) || !str(nonceP) || !str(nonceH) || !str(proof)) return false;
+    if (runMode === 'hub') {
+      // The hub's own TV checks the embedded server's authOk with the hub's key.
+      const h = hubHousehold(hubApi);
+      if (!h || !state.playerId) return false;
+      const ok = verifyAuthOk({
+        householdKey: h.householdKey,
+        deviceId: state.playerId,
+        hubId: h.hubId,
+        nonceP: nonceP as string,
+        nonceH: nonceH as string,
+        proof: proof as string,
+      });
+      if (!ok) log.warn('local hub authOk proof did not verify');
+      return ok;
+    }
     const key = householdKey();
-    if (!fromPage(e) || runMode !== 'player' || !key || !state.hubId) return false;
-    if (!str(nonceP) || !str(nonceH) || !str(proof)) return false;
+    if (runMode !== 'player' || !key || !state.hubId) return false;
     const ok = verifyAuthOk({
       householdKey: key,
       deviceId: deviceId(),
@@ -1252,13 +1288,16 @@ function registerM2Ipc(root: string): void {
     if (!fromPage(e) || runMode !== 'hub' || !str(nonceP) || !state.playerId) return null;
     const h = hubHousehold(hubApi);
     if (!h) return null;
+    // Bound to the window's own origin (`localhost`/`127.0.0.1` and LAN_PORT): the server takes
+    // the address from the socket's Host header, which is this origin.
     return {
       deviceId: state.playerId,
-      proof: joinProof(h.householdKey, {
+      proof: localPlayerAuthProof({
+        householdKey: h.householdKey,
         deviceId: state.playerId,
         hubId: h.hubId,
+        pageOrigin,
         nonceP: nonceP as string,
-        hub: hubEndpoint(pageOrigin),
       }),
     };
   });

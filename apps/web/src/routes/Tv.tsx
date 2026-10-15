@@ -90,7 +90,15 @@ function bridgeHandshake(playerMode: boolean): Handshake | null {
   const auth = playerMode ? b?.playerAuth : b?.localPlayerAuth;
   const verify = b?.verifyAuthOk;
   if (typeof auth !== 'function' || typeof verify !== 'function') return null;
-  return { auth: (n) => auth(n), verify: (n, h, p) => verify(n, h, p) };
+  return {
+    // A fresh nonce per connect (ws.ts); no proof (unpaired, before setup) fails the attempt.
+    auth: async (n) => {
+      const p = await auth(n);
+      if (!p) throw new Error('no proof');
+      return p;
+    },
+    verify: (n, h, p) => verify(n, h, p),
+  };
 }
 
 const onExtra: NonNullable<SessionClientOptions<'player'>['onExtra']> = (msg, client) => {

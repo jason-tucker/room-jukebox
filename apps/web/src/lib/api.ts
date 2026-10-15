@@ -22,6 +22,7 @@ import {
   SuggestReplySchema,
   HealthReplySchema,
   HubJsonSchema,
+  LinkReplySchema,
   RoomsReplySchema,
   UpdateStatusSchema,
   type LinkState,
@@ -153,32 +154,20 @@ const enc = encodeURIComponent;
 const groupQ = (group?: string, sep = '?') => (group ? `${sep}group=${enc(group)}` : '');
 
 /**
- * `POST /api/admin/rooms/:deviceId/link` reply: the room's queue entries that were not moved into
- * the main group (listed so the owner can re-add them; contract-m2 §3).
+ * A queue entry of a room that was linked back into the main group: not moved (shared
+ * **LinkReply** `orphaned`), listed so the owner can re-add it (contract-m2 §3).
  */
-export const OrphanedEntrySchema = z
-  .object({ videoId: z.string().min(1), title: z.string() })
-  .loose();
-export type OrphanedEntry = z.infer<typeof OrphanedEntrySchema>;
-export const LinkReplySchema = z
-  .object({ orphaned: z.array(OrphanedEntrySchema).optional() })
-  .loose();
+export type OrphanedEntry = { videoId: string; title: string };
 
-/** `GET /api/admin/replica/status` (server lane; fields optional until the shape is frozen). */
+/**
+ * `GET /api/admin/replica/status`: when the hub last sent a snapshot and when each remote player
+ * last acknowledged one (contract-m2 "Lane clarifications").
+ */
 export const ReplicaStatusSchema = z
   .object({
-    snapshotAt: z.number().nullable().optional(),
-    players: z
-      .array(
-        z
-          .object({
-            deviceId: z.string(),
-            name: z.string().optional(),
-            ackedAt: z.number().nullable().optional(),
-          })
-          .loose(),
-      )
-      .optional(),
+    lastSentAt: z.number().nullable(),
+    bytes: z.number().optional(),
+    players: z.array(z.object({ deviceId: z.string(), lastAckAt: z.number().nullable() }).loose()),
   })
   .loose();
 export type ReplicaStatus = z.infer<typeof ReplicaStatusSchema>;
@@ -271,7 +260,10 @@ export const api = {
     linkRoom: (deviceId: string) =>
       call('POST', `/api/admin/rooms/${enc(deviceId)}/link`, { body: {}, schema: LinkReplySchema }),
     splitRoom: (deviceId: string) =>
-      call('POST', `/api/admin/rooms/${enc(deviceId)}/split`, { body: {} }),
+      call('POST', `/api/admin/rooms/${enc(deviceId)}/split`, {
+        body: {},
+        schema: LinkReplySchema,
+      }),
     revokePlayer: (id: string) =>
       call('POST', `/api/admin/players/${enc(id)}/revoke`, { body: {} }),
     replicaStatus: () => call('GET', '/api/admin/replica/status', { schema: ReplicaStatusSchema }),
