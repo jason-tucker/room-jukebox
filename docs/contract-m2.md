@@ -1,4 +1,4 @@
-# M2 contract (draft 2026-10-10, main session; frozen when M1 passes its laptop gate)
+# M2 contract (frozen 2026-10-15 by the main session; M1 confirmed on real hardware)
 
 Scope: plan §5 M2 row and §3.5. Two laptops, each running the same .exe: Hub (full server) or Player (joins a hub). Become hub is included only if M1 passed clean (plan §7). Everything here extends `docs/contract-m1.md`; schemas live in `packages/shared/src/m2/`.
 
