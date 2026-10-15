@@ -183,6 +183,17 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   };
   const wsHub = new WsHub(ctx);
   hub = wsHub;
+  // Relay the desktop updater's countdown and errors to every page (phones included).
+  const unsubscribeUpdater = options.updater?.subscribe?.((s) => {
+    if (s.message && (s.state === 'installing' || s.state === 'error')) {
+      wsHub.toastAll(
+        s.state === 'error' ? 'warn' : 'info',
+        s.message,
+        s.state === 'installing' ? 15000 : 8000,
+      );
+    }
+  });
+  if (unsubscribeUpdater) app.addHook('onClose', async () => unsubscribeUpdater());
 
   app.decorate('jukebox', {
     needsSetup: () => settings.needsSetup(),

@@ -42,6 +42,8 @@ export interface UpdaterApi {
   installNow(): Promise<void>;
   setMode(mode: UpdateMode): void;
   setFeed(feed: UpdateFeed, url?: string): void;
+  /** Desktop only: status changes (countdown notices are relayed to every page). */
+  subscribe?(listener: (status: UpdateStatus) => void): () => void;
 }
 
 /** Shared services for route plugins. */

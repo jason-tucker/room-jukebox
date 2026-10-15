@@ -131,6 +131,11 @@ export class WsHub {
     }
   }
 
+  /** Every connected page (guests, admins, players), e.g. the 'Updating in 15 s' notice. */
+  toastAll(level: 'info' | 'warn' | 'error', message: string, ttlMs = 6000): void {
+    for (const c of this.#conns) this.send(c, { type: 'toast', level, message, ttlMs });
+  }
+
   toastAdmins(level: 'info' | 'warn' | 'error', message: string): void {
     for (const c of this.#conns) {
       if (c.role === 'admin') {

@@ -48,7 +48,7 @@ This repository is a pnpm monorepo:
    the release job, downloads when the room is quiet (no guest request for 2 hours while a fallback
    track plays) and installs when quiet between 05:00 and 12:00, at any hour while the TV is
    unplugged, or at once with _Update now_. An update already downloaded installs at the next start.
-   To turn automatic updates off, set `"autoUpdate": false` in
+   To change how updates install, use Admin → What's new → Updates (mode Immediate / Quiet hours / Off; feed Tango or GitHub); the same values live in
    `%APPDATA%\RoomJukebox\desktop-state.json` (manual _Check for updates_ still works).
 6. **Port in use:** the hub listens on port 8080. If another program holds it, the app retries for
    30 seconds and then shows an error page; change the port in settings (applies after a restart),
