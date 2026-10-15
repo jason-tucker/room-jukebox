@@ -193,10 +193,12 @@ const SEARCH_SOURCES: SearchSource[] = ['page', 'api-first', 'api-only'];
 export function SearchSourceForm({ state, run }: TabProps) {
   const saved: SearchSource = state.settings.search?.source ?? 'page';
   const [source, setSource] = useState<SearchSource>(saved);
+  const savedMirror = state.settings.search?.mirror ?? true;
+  const [mirror, setMirror] = useState(savedMirror);
   const { busy, patch } = usePatch({ run });
   const submit = (e: FormEvent) => {
     e.preventDefault();
-    void patch({ search: { source } });
+    void patch({ search: { source, mirror } });
   };
   return (
     <Section title={S.admin.searchSource}>
@@ -230,7 +232,25 @@ export function SearchSourceForm({ state, run }: TabProps) {
             );
           })}
         </fieldset>
-        <SaveRow busy={busy} disabled={source === saved} />
+        <label className="flex items-start gap-3 text-base">
+          <input
+            type="checkbox"
+            className="mt-0.5 size-6 shrink-0 accent-[var(--rj-accent)]"
+            checked={mirror}
+            aria-labelledby="search-mirror-label"
+            aria-describedby="search-mirror-hint"
+            onChange={(e) => setMirror(e.target.checked)}
+          />
+          <span className="flex flex-col">
+            <span id="search-mirror-label" className="font-semibold">
+              {S.admin.searchMirror.label}
+            </span>
+            <span id="search-mirror-hint" className="text-muted">
+              {S.admin.searchMirror.hint}
+            </span>
+          </span>
+        </label>
+        <SaveRow busy={busy} disabled={source === saved && mirror === savedMirror} />
       </form>
     </Section>
   );

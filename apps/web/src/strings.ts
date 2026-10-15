@@ -100,6 +100,12 @@ export const S = {
     nowPlayingBar: (title: string | null) =>
       title ? `Now playing: ${title}` : 'Now playing: nothing yet',
     showNowPlaying: 'Show now playing and the queue',
+    browse: 'Browse YouTube',
+    browseHint: 'Search and tap any video to add it',
+    browseDone: 'Done',
+    browseLoading: 'Loading YouTube…',
+    browseFailed: "YouTube didn't load; use the search below",
+    browseFrameTitle: 'YouTube',
   },
 
   sheet: {
@@ -108,6 +114,7 @@ export const S = {
     confirm: 'Request it',
     ownerConfirm: 'Add to queue',
     playable: 'Ready to play',
+    checking: 'Checking the song…',
     unknownDuration: 'Length unknown',
     by: (channel: string) => `by ${channel}`,
   },
@@ -317,6 +324,10 @@ export const S = {
     ownerReserve: 'Kept back for the owner',
     dailyTotal: 'Total searches per day',
     searchSource: 'Search source',
+    searchMirror: {
+      label: 'Embedded YouTube browsing',
+      hint: 'Guests get a Browse YouTube button that shows YouTube’s mobile site inside the jukebox page, passed through this hub; a tap on a video asks to add it. Not covered by YouTube’s terms; it can break if YouTube changes its site.',
+    },
     searchSources: {
       page: {
         label: 'YouTube page (unlimited)',

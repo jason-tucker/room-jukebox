@@ -3,6 +3,8 @@ export const KEYS = {
   notice: 'rj.noticeAccepted',
   name: 'rj.name',
   stepsSeen: 'rj.stepsSeen',
+  /** '1' when the guest last used Browse YouTube: the panel opens directly next visit. */
+  browse: 'rj.browse',
 } as const;
 
 export function readLocal(key: string): string | null {

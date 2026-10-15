@@ -41,7 +41,20 @@ describe('SearchSourceForm', () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('/api/admin/settings');
     expect(init.method).toBe('PATCH');
-    expect(JSON.parse(init.body as string)).toEqual({ search: { source: 'api-first' } });
+    expect(JSON.parse(init.body as string)).toEqual({
+      search: { source: 'api-first', mirror: true },
+    });
+  });
+
+  it('turns embedded YouTube browsing off', async () => {
+    const fetchMock = renderForm({ search: { source: 'page', mirror: true } });
+    const box = screen.getByRole('checkbox', { name: S.admin.searchMirror.label });
+    expect(box).toBeChecked();
+    fireEvent.click(box);
+    fireEvent.click(screen.getByRole('button', { name: S.app.save }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(init.body as string)).toEqual({ search: { source: 'page', mirror: false } });
   });
 });
 

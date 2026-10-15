@@ -11,6 +11,7 @@ export function ResolveSheet({
   onConfirm,
   onClose,
   busy = false,
+  checking = false,
   error = null,
   owner = false,
   ctx = {},
@@ -19,6 +20,8 @@ export function ResolveSheet({
   onConfirm: () => void;
   onClose: () => void;
   busy?: boolean;
+  /** The verdict is still loading: show the title, hold the confirm button. */
+  checking?: boolean;
   error?: string | null;
   owner?: boolean;
   ctx?: MessageContext;
@@ -29,16 +32,20 @@ export function ResolveSheet({
         <img
           src={thumbFor(video.videoId, video.thumbnail)}
           alt=""
-          className={`aspect-video w-full rounded-2xl bg-surface-2 object-cover ${video.playable ? '' : 'opacity-60 grayscale'}`}
+          className={`aspect-video w-full rounded-2xl bg-surface-2 object-cover ${video.playable || checking ? '' : 'opacity-60 grayscale'}`}
         />
         <div className="flex flex-col gap-1">
           <div className="text-xl leading-snug font-bold break-words">{video.title}</div>
           {video.channelTitle && (
             <div className="text-base text-muted">{S.sheet.by(video.channelTitle)}</div>
           )}
-          <div className="text-base text-muted">{durationText(video.durationSec)}</div>
+          {!checking && (
+            <div className="text-base text-muted">{durationText(video.durationSec)}</div>
+          )}
         </div>
-        {video.playable ? (
+        {checking ? (
+          <Notice>{S.sheet.checking}</Notice>
+        ) : video.playable ? (
           <Notice>{S.sheet.playable}</Notice>
         ) : (
           <Notice tone="error">{reasonText(video, ctx)}</Notice>
@@ -47,7 +54,7 @@ export function ResolveSheet({
         <button
           type="button"
           className={`${btn.primary} w-full`}
-          disabled={!video.playable || busy}
+          disabled={checking || !video.playable || busy}
           onClick={onConfirm}
         >
           {busy ? S.app.working : owner ? S.sheet.ownerConfirm : S.sheet.confirm}

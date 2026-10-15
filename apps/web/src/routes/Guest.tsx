@@ -1,5 +1,6 @@
 import type { RequestReply } from '@room-jukebox/shared';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { BrowsePanel } from '../components/BrowsePanel.tsx';
 import {
   ForgetDoneSheet,
   GuestFooter,
@@ -39,11 +40,21 @@ export function Guest() {
     resting: false,
   });
   const [npExpanded, setNpExpanded] = useState(false);
+  // null until the guest opens or closes Browse: then the remembered preference decides.
+  const [browseOpen, setBrowseOpen] = useState<boolean | null>(null);
+  const [browsePreferred] = useState(() => readLocal(KEYS.browse) === '1');
+  const [browseFailed, setBrowseFailed] = useState(false);
   const manualRef = useRef<HTMLInputElement>(null);
   const npRef = useRef<HTMLElement>(null);
   const { toasts, push } = useToasts();
 
   const { state, status, client } = useSessionState('guest', { enabled: helloDone });
+
+  // A navigation inside Browse YouTube that escaped the mirror lands here, in the iframe: go back
+  // to YouTube instead of nesting the jukebox in itself.
+  useEffect(() => {
+    if (window.self !== window.top) window.location.replace('/yt/results?search_query=');
+  }, []);
 
   // Cookie first (hello), then the socket. The notice shows unless this phone or the server
   // already has the acceptance.
@@ -106,6 +117,31 @@ export function Guest() {
     [push],
   );
   const flow = useRequestFlow({ submit, onDone, ctx });
+
+  const mirrorOn = state?.flags.mirror !== false;
+
+  const openBrowse = useCallback(() => {
+    writeLocal(KEYS.browse, '1');
+    setBrowseFailed(false);
+    setBrowseOpen(true);
+  }, []);
+
+  // Guests who used Browse last time land in it directly (after the notice).
+  const showBrowse =
+    !!state && mirrorOn && (browseOpen ?? (browsePreferred && helloDone && !noticeOpen));
+
+  const onBrowseFail = useCallback(() => {
+    setBrowseOpen(false);
+    setBrowseFailed(true);
+    writeLocal(KEYS.browse, null);
+    push(S.guest.browseFailed, 'warn');
+  }, [push]);
+
+  const { openPick } = flow;
+  const onBrowsePick = useCallback(
+    (videoId: string, title: string) => void openPick(videoId, title),
+    [openPick],
+  );
 
   const acceptNotice = () => {
     writeLocal(KEYS.notice, '1');
@@ -249,6 +285,23 @@ export function Guest() {
       <main className="mx-auto flex w-full max-w-2xl flex-col gap-6 px-4 py-4">
         {helloDone && status === 'reconnecting' && <Notice tone="warn">{S.guest.offline}</Notice>}
 
+        {state && mirrorOn && (
+          <section data-testid="browse-section" className="flex flex-col gap-2">
+            <button
+              type="button"
+              data-testid="browse-button"
+              onClick={openBrowse}
+              className={`${btn.primary} min-h-16 w-full text-xl`}
+            >
+              <svg aria-hidden viewBox="0 0 24 24" className="size-7" fill="currentColor">
+                <path d="M21.6 7.2a2.5 2.5 0 0 0-1.8-1.8C18.2 5 12 5 12 5s-6.2 0-7.8.4A2.5 2.5 0 0 0 2.4 7.2 26 26 0 0 0 2 12a26 26 0 0 0 .4 4.8 2.5 2.5 0 0 0 1.8 1.8C5.8 19 12 19 12 19s6.2 0 7.8-.4a2.5 2.5 0 0 0 1.8-1.8A26 26 0 0 0 22 12a26 26 0 0 0-.4-4.8ZM10 15V9l5.2 3L10 15Z" />
+              </svg>
+              {S.guest.browse}
+            </button>
+            {browseFailed && <Notice tone="warn">{S.guest.browseFailed}</Notice>}
+          </section>
+        )}
+
         {pasteFirst && pasteSection}
 
         {state ? (
@@ -327,9 +380,18 @@ export function Guest() {
         <GuestFooter onForget={() => void forget()} />
       </main>
 
+      {showBrowse && (
+        <BrowsePanel
+          title={roomName}
+          onDone={() => setBrowseOpen(false)}
+          onPick={onBrowsePick}
+          onFail={onBrowseFail}
+        />
+      )}
       {flow.pending && (
         <ResolveSheet
           video={flow.pending.video}
+          checking={flow.pending.checking ?? false}
           busy={flow.busy}
           error={flow.sheetError}
           onConfirm={() => void flow.confirm()}
