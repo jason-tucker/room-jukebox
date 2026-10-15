@@ -18,6 +18,9 @@ extraResources:
   # Tray icon (the window and installer icons come from build/icon.ico).
   - from: build/icon.png
     to: icon.png
+  # This build's notes and test checklist (scripts/release-notes.mjs; served as "What's new").
+  - from: build/release-notes.json
+    to: release-notes.json
 win:
   icon: build/icon.ico
   target:
@@ -30,6 +33,8 @@ nsis:
   allowToChangeInstallationDirectory: false
   createDesktopShortcut: true
   include: build/installer.nsh
+# The app picks its feed at runtime (desktop-state `updateFeed`: Tango's generic feed or this
+# GitHub repo); this entry only fills app-update.yml.
 publish:
   provider: github
   owner: jason-tucker

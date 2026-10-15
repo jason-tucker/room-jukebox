@@ -21,26 +21,62 @@ const fakeDpapi: SecretCodec = {
 };
 
 describe('desktop-state.json', () => {
-  it('defaults when missing or corrupt, autoUpdate on', () => {
+  const DEFAULTS = {
+    updateMode: 'immediate',
+    updateFeed: 'tango',
+    updateFeedUrl: 'http://192.168.1.5:8766/',
+  } as const;
+
+  it('defaults when missing or corrupt: immediate updates from the Tango feed', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rj-state-'));
-    expect(loadState(join(dir, 'missing.json'))).toEqual({ autoUpdate: true });
+    expect(loadState(join(dir, 'missing.json'))).toEqual(DEFAULTS);
     writeFileSync(join(dir, 'bad.json'), '{not json');
-    expect(loadState(join(dir, 'bad.json'))).toEqual({ autoUpdate: true });
+    expect(loadState(join(dir, 'bad.json'))).toEqual(DEFAULTS);
     writeFileSync(join(dir, 'arr.json'), '[]');
-    expect(loadState(join(dir, 'arr.json'))).toEqual({ autoUpdate: true });
+    expect(loadState(join(dir, 'arr.json'))).toEqual(DEFAULTS);
+  });
+
+  it('migrates the legacy autoUpdate toggle and rejects bad update settings', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rj-state-'));
+    writeFileSync(join(dir, 'off.json'), JSON.stringify({ autoUpdate: false }));
+    expect(loadState(join(dir, 'off.json'))).toEqual({ ...DEFAULTS, updateMode: 'off' });
+    writeFileSync(join(dir, 'on.json'), JSON.stringify({ autoUpdate: true }));
+    expect(loadState(join(dir, 'on.json'))).toEqual(DEFAULTS);
+    writeFileSync(
+      join(dir, 'set.json'),
+      JSON.stringify({
+        autoUpdate: false,
+        updateMode: 'quiet',
+        updateFeed: 'github',
+        updateFeedUrl: 'http://10.0.0.2:9000/feed',
+      }),
+    );
+    expect(loadState(join(dir, 'set.json'))).toEqual({
+      updateMode: 'quiet',
+      updateFeed: 'github',
+      updateFeedUrl: 'http://10.0.0.2:9000/feed/',
+    });
+    writeFileSync(
+      join(dir, 'junk.json'),
+      JSON.stringify({ updateMode: 'yolo', updateFeed: 'ftp', updateFeedUrl: 'file:///etc' }),
+    );
+    expect(loadState(join(dir, 'junk.json'))).toEqual(DEFAULTS);
   });
 
   it('round-trips with sealed secrets and never stores the token in clear', () => {
     const file = join(mkdtempSync(join(tmpdir(), 'rj-state-')), 'sub', 'desktop-state.json');
     saveState(file, {
-      autoUpdate: false,
+      ...DEFAULTS,
+      updateMode: 'off',
+      lastRunVersion: '0.0.7',
       playerId: 'tv-1',
       playerToken: sealSecret(fakeDpapi, 'player-secret'),
       lanPort: 8081,
     });
     expect(readFileSync(file, 'utf8')).not.toContain('player-secret');
     const back = loadState(file);
-    expect(back.autoUpdate).toBe(false);
+    expect(back.updateMode).toBe('off');
+    expect(back.lastRunVersion).toBe('0.0.7');
     expect(back.lanPort).toBe(8081);
     expect(openSecret(fakeDpapi, back.playerToken)).toBe('player-secret');
   });

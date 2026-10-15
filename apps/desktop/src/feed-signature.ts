@@ -43,14 +43,17 @@ export type FetchLike = (url: string) => Promise<{
 export type FeedCheck =
   { ok: true; dateHeader: string | null } | { ok: false; error: string; dateHeader: string | null };
 
-/** Fetches `latest.yml` and `latest.yml.sig` of the release `v<version>` and checks both. */
+/**
+ * Fetches `<base>/latest.yml` and `<base>/latest.yml.sig` and checks both. `base` is the feed
+ * directory (Tango) or the release `.../download/v<version>` (GitHub): see `signatureBase`.
+ */
 export async function checkSignedFeed(
-  baseUrl: string,
+  feedBase: string,
   info: FeedInfo,
   publicKeyPem: string,
   fetchFn: FetchLike,
 ): Promise<FeedCheck> {
-  const base = `${baseUrl.replace(/\/+$/, '')}/v${info.version}`;
+  const base = feedBase.replace(/\/+$/, '');
   const yml = await fetchFn(`${base}/latest.yml`);
   const dateHeader = yml.headers.get('date');
   if (!yml.ok) return { ok: false, error: `latest.yml HTTP ${yml.status}`, dateHeader };

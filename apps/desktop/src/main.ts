@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { hostname, networkInterfaces } from 'node:os';
 import { join } from 'node:path';
 import { PROTOCOL_VERSION } from '@room-jukebox/shared';
-import type { SettingsPublic } from '@room-jukebox/shared';
+import type { ReleaseNotes, SettingsPublic } from '@room-jukebox/shared';
 import {
   app,
   BrowserWindow,
@@ -19,6 +19,8 @@ import {
   Tray,
 } from 'electron';
 import type { IpcMainEvent, IpcMainInvokeEvent } from 'electron';
+import { autoUpdater } from 'electron-updater';
+import publicKeyPem from '../build/release-public.pem';
 import { buildApp } from 'server/src/app.ts';
 import type { BuildAppOptions } from 'server/src/app.ts';
 import { parseArgs } from './args';
@@ -27,6 +29,7 @@ import { startBroadcaster, startListener } from './beacon';
 import { loadState, openSecret, saveState, sealSecret } from './desktop-state';
 import type { DesktopState, SecretCodec } from './desktop-state';
 import { pickTvDisplay, tvConnected } from './display';
+import { loadReleaseNotes } from './release-notes';
 import { setupLogging } from './logging';
 import { lanAddresses } from './net';
 import type { LanAddress } from './net';
@@ -36,9 +39,10 @@ import { runSelfCheck } from './selfcheck';
 import type { SelfCheck } from './selfcheck';
 import { startStaticServer } from './static-server';
 import { IdleTokenCache } from './token-cache';
-import { ActivityTracker, isQuiet } from './update-policy';
+import { ActivityTracker, isQuiet, updatedMessage } from './update-policy';
 import type { ActivitySnapshot } from './update-policy';
-import { Updater } from './updater';
+import { inertUpdaterControl, Updater } from './updater';
+import type { UpdaterControl, UpdateSettings } from './updater';
 import { resolveWindowMode } from './window-mode';
 import type { WindowMode } from './window-mode';
 
@@ -85,7 +89,8 @@ const RELOAD_WINDOW_MS = 10 * 60 * 1000;
 const OWNER_IDLE_MS = 10 * 60 * 1000;
 const HEARTBEAT_TIMEOUT_MS = 30_000;
 const REASSERT_FULLSCREEN_MS = 5000;
-const UPDATE_CHECK_MS = 6 * 60 * 60 * 1000;
+/** Updater tick: checks when due (10 min immediate, 6 h quiet), downloads and installs. */
+const UPDATE_TICK_MS = 60_000;
 const ACTIVITY_POLL_MS = 60_000;
 
 let tvWindow: BrowserWindow | null = null;
@@ -94,6 +99,7 @@ let promptWindow: BrowserWindow | null = null;
 let promptWaiters: ((ok: boolean) => void)[] = [];
 let tray: Tray | null = null;
 let updater: Updater | undefined;
+let releaseNotes: ReleaseNotes | null = null;
 let selfCheck: Promise<SelfCheck> | null = null;
 let codec: SecretCodec = { available: false, encrypt: (p) => p, decrypt: (c) => c };
 
@@ -125,6 +131,13 @@ function iconPath(): string {
   return app.isPackaged
     ? join(process.resourcesPath, 'icon.png')
     : join(app.getAppPath(), 'build', 'icon.png');
+}
+
+/** Release notes of this build: extraResources when packaged, the generated file in a checkout. */
+function releaseNotesPath(): string {
+  return app.isPackaged
+    ? join(process.resourcesPath, 'release-notes.json')
+    : join(app.getAppPath(), 'build', 'release-notes.json');
 }
 
 /** Stable per-install hub id (M2 replaces it with the household identity). */
@@ -601,7 +614,13 @@ async function checkFromTray(): Promise<void> {
   }
   const choice = await dialog.showMessageBox({
     type: 'info',
-    message: `${result.message} It installs on its own when the room is quiet.`,
+    message: `${result.message} ${
+      state.updateMode === 'immediate'
+        ? 'It installs on its own in a few minutes.'
+        : state.updateMode === 'quiet'
+          ? 'It installs on its own when the room is quiet.'
+          : 'Automatic updates are off.'
+    }`,
     buttons: ['Update now', 'Later'],
     defaultId: 1,
     cancelId: 1,
@@ -809,7 +828,27 @@ type HubOptions = BuildAppOptions & {
   spike?: boolean;
   /** M0 server only: where the spike writes results (drop once the server reads `dataDir`). */
   spikeDataDir?: string;
+  /** M1.5: this build's notes and checklist (`GET /api/admin/release-notes`). */
+  releaseNotes?: ReleaseNotes | null;
+  /** M1.5: `GET /api/admin/update-status`, `POST /api/admin/update/{check,install,mode,feed}`. */
+  updater?: UpdaterControl;
 };
+
+function updateSettings(): UpdateSettings {
+  return { mode: state.updateMode, feed: state.updateFeed, feedUrl: state.updateFeedUrl };
+}
+
+function saveUpdateSettings(patch: Partial<UpdateSettings>): void {
+  const next: Partial<DesktopState> = {};
+  if (patch.mode) next.updateMode = patch.mode;
+  if (patch.feed) next.updateFeed = patch.feed;
+  if (patch.feedUrl) next.updateFeedUrl = patch.feedUrl;
+  persist(next);
+}
+
+function updaterControl(): UpdaterControl {
+  return updater ?? inertUpdaterControl(app.getVersion(), updateSettings, saveUpdateSettings);
+}
 
 async function startHub(root: string): Promise<boolean> {
   const dataDir = join(app.getPath('userData'), 'data');
@@ -826,6 +865,8 @@ async function startHub(root: string): Promise<boolean> {
     },
     spike: true /* keep the M0 spike reachable until M0 closes */,
     spikeDataDir: dataDir,
+    releaseNotes,
+    updater: updaterControl(),
   };
   const server = await buildApp(options);
   try {
@@ -907,6 +948,7 @@ function registerIpc(): void {
     if (!(await ownerGate('Update now'))) return { ok: false, message: 'cancelled' };
     return updater.updateNow();
   });
+  ipcMain.handle('jukebox:releaseNotes', (e) => (fromPage(e) ? releaseNotes : undefined));
   ipcMain.handle('jukebox:setupComplete', async (e, reply: unknown) => {
     if (!fromPage(e) || opts.mode !== 'hub') return false;
     if (await needsSetup()) return false;
@@ -930,17 +972,39 @@ function startUpdater(): void {
     log.info('updater disabled (not packaged)');
     return;
   }
+  autoUpdater.logger = log;
   updater = new Updater({
+    autoUpdater,
     log,
-    fetch: (url) => net.fetch(url),
+    // no-store: latest.yml must be the bytes the feed serves now, not Chromium's cached copy.
+    fetch: (url) => net.fetch(url, { cache: 'no-store' }),
+    publicKeyPem,
+    currentVersion: app.getVersion(),
     toast,
-    enabled: () => state.autoUpdate,
+    settings: updateSettings,
+    saveSettings: saveUpdateSettings,
     quietStatus,
     sessionEnding: () => sessionEnding,
+    setupOpen: () => setupMode,
     setPending: (pendingUpdate) => persist({ pendingUpdate }),
     beforeInstall: () => {
       quitting = true;
     },
+  });
+}
+
+/** First launch of a new version: tell the TV, once, and point at the checklist. */
+function announceUpdate(win: BrowserWindow): void {
+  const version = app.getVersion();
+  if (state.lastRunVersion === version) return;
+  const previous = state.lastRunVersion;
+  persist({ lastRunVersion: version });
+  const notes = releaseNotes?.version === version ? releaseNotes : null;
+  const message = updatedMessage(version, notes?.checklist.length ?? 0);
+  log.info(`first run of ${version} (previous ${previous ?? 'unknown'}): ${message}`);
+  // The page subscribes to toasts after it loads; give it a moment.
+  win.webContents.once('did-finish-load', () => {
+    setTimeout(() => toast('info', message, 20_000), 3000);
   });
 }
 
@@ -974,10 +1038,15 @@ async function main(): Promise<void> {
   });
   ipcMain.handle('jukebox:selfcheck', (e) => (fromPage(e) ? selfCheck : undefined));
 
+  releaseNotes = loadReleaseNotes(releaseNotesPath(), log);
+  if (releaseNotes && releaseNotes.version !== app.getVersion()) {
+    log.warn(`release notes are for ${releaseNotes.version}, this is ${app.getVersion()}`);
+  }
+
   startUpdater();
   // An update downloaded in an earlier run installs before the TV window opens.
   const pending = state.pendingUpdate;
-  if (updater && pending && state.autoUpdate) {
+  if (updater && pending && state.updateMode !== 'off') {
     if (pending.version === app.getVersion()) persist({ pendingUpdate: undefined });
     else if (await updater.installAtLaunch(pending.version, 30_000)) return;
   }
@@ -988,6 +1057,7 @@ async function main(): Promise<void> {
 
   setupMode = await needsSetup();
   tvWindow = createTvWindow(tvUrl());
+  announceUpdate(tvWindow);
   void applyServerSettings();
 
   let placeTimer: NodeJS.Timeout | undefined;
@@ -1027,9 +1097,8 @@ async function main(): Promise<void> {
   }
   if (updater) {
     const u = updater;
-    void u.scheduledCheck();
-    setInterval(() => void u.scheduledCheck(), UPDATE_CHECK_MS);
-    setInterval(() => void u.tick(), 60_000);
+    void u.tick();
+    setInterval(() => void u.tick(), UPDATE_TICK_MS);
   }
 }
 

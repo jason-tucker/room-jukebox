@@ -1,10 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
   ActivityTracker,
+  checkDue,
+  checkIntervalMs,
   clockSkewMs,
+  countdownMessage,
+  DEFAULT_FEED_URL,
+  displayFeedUrl,
+  feedConfig,
+  IMMEDIATE_CHECK_MS,
   installDecision,
   isQuiet,
+  isUpdateFeed,
+  isUpdateMode,
+  normalizeFeedUrl,
   QUIET_AFTER_MS,
+  signatureBase,
+  updatedMessage,
 } from '../src/update-policy';
 import type { InstallInput } from '../src/update-policy';
 
@@ -170,5 +182,71 @@ describe('activity tracker', () => {
 
     t.unknown();
     expect(t.nowPlayingSource).toBeUndefined();
+  });
+});
+
+describe('update modes and feeds', () => {
+  const M = 60 * 1000;
+
+  it('checks at launch, then every 10 min (immediate) or 6 h (quiet), never when off', () => {
+    expect(checkDue('immediate', undefined, NOW)).toBe(true);
+    expect(checkDue('immediate', NOW - 10 * M + 1, NOW)).toBe(false);
+    expect(checkDue('immediate', NOW - 10 * M, NOW)).toBe(true);
+    expect(checkDue('quiet', undefined, NOW)).toBe(true);
+    expect(checkDue('quiet', NOW - 10 * M, NOW)).toBe(false);
+    expect(checkDue('quiet', NOW - 6 * H, NOW)).toBe(true);
+    expect(checkDue('off', undefined, NOW)).toBe(false);
+    expect(checkIntervalMs('immediate')).toBe(IMMEDIATE_CHECK_MS);
+    expect(checkIntervalMs('off')).toBeUndefined();
+  });
+
+  it('selects the generic provider on Tango and the GitHub provider otherwise', () => {
+    expect(feedConfig('tango', DEFAULT_FEED_URL)).toEqual({
+      provider: 'generic',
+      url: 'http://192.168.1.5:8766/',
+    });
+    expect(feedConfig('tango', 'http://10.0.0.5:9000/rj')).toEqual({
+      provider: 'generic',
+      url: 'http://10.0.0.5:9000/rj/',
+    });
+    expect(feedConfig('github', DEFAULT_FEED_URL)).toEqual({
+      provider: 'github',
+      owner: 'jason-tucker',
+      repo: 'room-jukebox',
+    });
+  });
+
+  it('fetches the signature next to latest.yml on either feed', () => {
+    expect(signatureBase('tango', 'http://192.168.1.5:8766/', '0.0.8')).toBe(
+      'http://192.168.1.5:8766',
+    );
+    expect(signatureBase('tango', 'http://h/a/b?x=1#y', '0.0.8')).toBe('http://h/a/b');
+    expect(signatureBase('github', DEFAULT_FEED_URL, '0.0.8')).toBe(
+      'https://github.com/jason-tucker/room-jukebox/releases/download/v0.0.8',
+    );
+    expect(displayFeedUrl('github', DEFAULT_FEED_URL)).toBe(
+      'https://github.com/jason-tucker/room-jukebox/releases',
+    );
+  });
+
+  it('accepts only http(s) feed URLs', () => {
+    expect(normalizeFeedUrl(' https://feed.example/x ')).toBe('https://feed.example/x/');
+    expect(() => normalizeFeedUrl('file:///C:/feed')).toThrow();
+    expect(() => normalizeFeedUrl('not a url')).toThrow();
+    expect(isUpdateMode('quiet')).toBe(true);
+    expect(isUpdateMode('soon')).toBe(false);
+    expect(isUpdateFeed('github')).toBe(true);
+    expect(isUpdateFeed('s3')).toBe(false);
+  });
+
+  it('words the notices', () => {
+    expect(countdownMessage('0.0.8')).toBe('Updating to 0.0.8 in 15 s');
+    expect(updatedMessage('0.0.8', 7)).toBe(
+      "Updated to 0.0.8 — 7 things to test in Admin → What's new",
+    );
+    expect(updatedMessage('0.0.8', 1)).toBe(
+      "Updated to 0.0.8 — 1 thing to test in Admin → What's new",
+    );
+    expect(updatedMessage('0.0.8', 0)).toBe('Updated to 0.0.8');
   });
 });

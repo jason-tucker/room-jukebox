@@ -115,3 +115,91 @@ export class ActivityTracker {
     this.nowPlayingSource = undefined;
   }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Update modes and feeds (M1.5 test phase)
+
+export type UpdateMode = 'immediate' | 'quiet' | 'off';
+export type UpdateFeed = 'tango' | 'github';
+
+export const UPDATE_MODES: readonly UpdateMode[] = ['immediate', 'quiet', 'off'];
+export const UPDATE_FEEDS: readonly UpdateFeed[] = ['tango', 'github'];
+
+/** Tango's nginx container serving `/mnt/user/Public/RoomJukebox/`. */
+export const DEFAULT_FEED_URL = 'http://192.168.1.5:8766/';
+export const GITHUB_REPO = { owner: 'jason-tucker', repo: 'room-jukebox' } as const;
+/** GitHub release assets (electron-builder tags `v<version>`). */
+export const GITHUB_DOWNLOAD_BASE = `https://github.com/${GITHUB_REPO.owner}/${GITHUB_REPO.repo}/releases/download`;
+
+export const IMMEDIATE_CHECK_MS = 10 * 60 * 1000;
+export const QUIET_CHECK_MS = 6 * 60 * 60 * 1000;
+/** Notice shown on the TV and phones before an `immediate` install. */
+export const INSTALL_COUNTDOWN_MS = 15_000;
+
+export function isUpdateMode(v: unknown): v is UpdateMode {
+  return typeof v === 'string' && (UPDATE_MODES as readonly string[]).includes(v);
+}
+
+export function isUpdateFeed(v: unknown): v is UpdateFeed {
+  return typeof v === 'string' && (UPDATE_FEEDS as readonly string[]).includes(v);
+}
+
+/** Feed check cadence: 10 min in `immediate`, 6 h in `quiet`, never when `off`. */
+export function checkIntervalMs(mode: UpdateMode): number | undefined {
+  if (mode === 'immediate') return IMMEDIATE_CHECK_MS;
+  if (mode === 'quiet') return QUIET_CHECK_MS;
+  return undefined;
+}
+
+/** A scheduled check is due at launch (no check yet) and then every `checkIntervalMs`. */
+export function checkDue(mode: UpdateMode, lastCheckAt: number | undefined, now: number): boolean {
+  const every = checkIntervalMs(mode);
+  if (every === undefined) return false;
+  return lastCheckAt === undefined || now - lastCheckAt >= every;
+}
+
+/** `http(s)://host[:port]/path/` with a trailing slash; throws on anything else. */
+export function normalizeFeedUrl(url: string): string {
+  const u = new URL(url.trim());
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    throw new Error(`update feed must be http(s): ${url}`);
+  }
+  u.search = '';
+  u.hash = '';
+  if (!u.pathname.endsWith('/')) u.pathname += '/';
+  return u.toString();
+}
+
+export type FeedConfig =
+  { provider: 'generic'; url: string } | { provider: 'github'; owner: string; repo: string };
+
+/** electron-updater `setFeedURL` options for the chosen feed. */
+export function feedConfig(feed: UpdateFeed, feedUrl: string): FeedConfig {
+  return feed === 'tango'
+    ? { provider: 'generic', url: normalizeFeedUrl(feedUrl) }
+    : { provider: 'github', ...GITHUB_REPO };
+}
+
+/** Directory holding `latest.yml` and `latest.yml.sig` for the offered version. */
+export function signatureBase(feed: UpdateFeed, feedUrl: string, version: string): string {
+  return feed === 'tango'
+    ? normalizeFeedUrl(feedUrl).replace(/\/+$/, '')
+    : `${GITHUB_DOWNLOAD_BASE}/v${version}`;
+}
+
+/** The URL shown in the status for a feed (GitHub: the releases page). */
+export function displayFeedUrl(feed: UpdateFeed, feedUrl: string): string {
+  return feed === 'tango'
+    ? normalizeFeedUrl(feedUrl)
+    : `https://github.com/${GITHUB_REPO.owner}/${GITHUB_REPO.repo}/releases`;
+}
+
+export function countdownMessage(version: string, ms: number = INSTALL_COUNTDOWN_MS): string {
+  return `Updating to ${version} in ${Math.round(ms / 1000)} s`;
+}
+
+export function updatedMessage(version: string, checklistItems: number): string {
+  if (checklistItems <= 0) return `Updated to ${version}`;
+  const things = checklistItems === 1 ? '1 thing' : `${checklistItems} things`;
+  return `Updated to ${version} — ${things} to test in Admin → What's new`;
+}
