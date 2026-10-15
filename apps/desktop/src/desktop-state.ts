@@ -1,5 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import type { LinkState } from '@room-jukebox/shared';
+import type { Mode } from './args';
 import { DEFAULT_FEED_URL, isUpdateFeed, isUpdateMode, normalizeFeedUrl } from './update-policy';
 import type { UpdateFeed, UpdateMode } from './update-policy';
 
@@ -15,6 +17,24 @@ export interface StoredSecret {
  * can open correctly before the server is asked again.
  */
 export interface DesktopState {
+  /** M2: `hub` (full server; also every pre-M2 install) or `player` (joined a hub by pairing).
+   * `--mode` on the command line overrides it for one run. */
+  mode: Mode;
+  /** M2: this laptop's id as a player, generated once (`PairBody.deviceId`). */
+  deviceId?: string;
+  /** M2 player: base URL of the hub, `http://<host>:<port>` (pairing, manual entry). */
+  hubAddress?: string;
+  /** M2 player: the paired hub's identity from `PairReply`. */
+  hubId?: string;
+  hubEpoch?: number;
+  roomName?: string;
+  /** M2 player: device token issued by `POST /api/pair`. */
+  deviceToken?: StoredSecret;
+  /** M2 player: household key (base64, 32 bytes) and its epoch (`rekey` raises it). */
+  householdKey?: StoredSecret;
+  keyEpoch?: number;
+  /** M2 player: remembered join-popup state (default `linked`). */
+  linkState?: LinkState;
   /** Desktop admin bearer issued by `POST /api/setup` (used for the updater's activity poll). */
   adminToken?: StoredSecret;
   /** Device token of the hub's own TV window. */
@@ -47,6 +67,7 @@ export interface SecretCodec {
 }
 
 export const DEFAULT_STATE: DesktopState = {
+  mode: 'hub',
   updateMode: 'immediate',
   updateFeed: 'tango',
   updateFeedUrl: DEFAULT_FEED_URL,
@@ -68,9 +89,11 @@ export function loadState(file: string): DesktopState {
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ...DEFAULT_STATE };
     const { autoUpdate, ...rest } = parsed;
     const legacyMode: UpdateMode = autoUpdate === false ? 'off' : DEFAULT_STATE.updateMode;
+    if (rest.linkState !== 'linked' && rest.linkState !== 'independent') delete rest.linkState;
     return {
       ...DEFAULT_STATE,
       ...rest,
+      mode: rest.mode === 'player' ? 'player' : 'hub',
       updateMode: isUpdateMode(rest.updateMode) ? rest.updateMode : legacyMode,
       updateFeed: isUpdateFeed(rest.updateFeed) ? rest.updateFeed : DEFAULT_STATE.updateFeed,
       updateFeedUrl: feedUrlOrDefault(rest.updateFeedUrl),

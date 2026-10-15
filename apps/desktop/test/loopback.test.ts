@@ -3,6 +3,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { startBroadcaster, startListener } from '../src/beacon';
+import type { BeaconIdentity } from '../src/beacon';
+import { subkey } from '../src/household';
+import { HubDirectory } from '../src/hubs';
 import { startStaticServer } from '../src/static-server';
 
 const quiet = { info: () => {}, warn: () => {}, error: () => {} };
@@ -36,16 +39,22 @@ describe('player loopback static server', () => {
 });
 
 describe('beacon', () => {
-  it('broadcasts per interface and the listener records the last beacon', async () => {
+  it('broadcasts signed v2 beacons per interface and the listener hands them over', async () => {
     const beaconPort = 40000 + Math.floor(Math.random() * 5000);
-    const listener = startListener({ log: quiet, beaconPort });
+    const beaconKey = subkey(Buffer.alloc(32, 7), 'rj/beacon');
+    const directory = new HubDirectory(() => beaconKey);
+    const listener = startListener({
+      log: quiet,
+      beaconPort,
+      onBeacon: (b, from) => directory.accept(b, from),
+    });
+    let identity: BeaconIdentity | null = null;
     const broadcaster = startBroadcaster({
-      hubId: 'hub-1',
+      identity: () => identity,
       bootId: 'boot-1',
-      roomName: 'Basement',
       port: 8080,
       version: '0.0.1',
-      protocolVersion: 1,
+      protocolVersion: 2,
       log: quiet,
       beaconPort,
       listInterfaces: () => [
@@ -53,19 +62,25 @@ describe('beacon', () => {
       ],
     });
     try {
-      await expect.poll(() => listener.last(), { timeout: 5000, interval: 100 }).not.toBeNull();
+      // No household key yet: nothing is sent.
+      await new Promise((r) => setTimeout(r, 300));
+      expect(listener.last()).toBeNull();
+      identity = { hubId: 'hub-1', hubEpoch: 3, keyEpoch: 1, roomName: 'Basement', beaconKey };
+      await expect.poll(() => directory.list().length, { timeout: 6000, interval: 100 }).toBe(1);
       const got = listener.last()!;
       expect(got.from).toBe('127.0.0.1');
       expect(got.beacon).toMatchObject({
-        type: 'beacon',
+        v: 2,
         hubId: 'hub-1',
+        hubEpoch: 3,
+        keyEpoch: 1,
         bootId: 'boot-1',
         roomName: 'Basement',
         address: '127.0.0.1',
         port: 8080,
-        protocolVersion: 1,
+        protocolVersion: 2,
       });
-      expect(got.beacon.counter).toBeGreaterThanOrEqual(1);
+      expect(directory.list()[0]).toMatchObject({ hubId: 'hub-1', verified: true, port: 8080 });
     } finally {
       broadcaster.stop();
       listener.stop();
