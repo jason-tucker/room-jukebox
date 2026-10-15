@@ -1,5 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { DEFAULT_FEED_URL, isUpdateFeed, isUpdateMode, normalizeFeedUrl } from './update-policy';
+import type { UpdateFeed, UpdateMode } from './update-policy';
 
 /** A secret at rest: `safeStorage` ciphertext (base64) or, when DPAPI is unavailable, plaintext. */
 export interface StoredSecret {
@@ -18,8 +20,14 @@ export interface DesktopState {
   /** Device token of the hub's own TV window. */
   playerToken?: StoredSecret;
   playerId?: string;
-  /** Auto-update toggle (default on). */
-  autoUpdate: boolean;
+  /** `immediate` (test phase default): install each new build after a 15 s notice;
+   * `quiet`: the quiet rule; `off`: only "Update now". Legacy `autoUpdate: false` reads as `off`. */
+  updateMode: UpdateMode;
+  /** `tango` (generic feed at `updateFeedUrl`) until a GitHub release exists, or `github`. */
+  updateFeed: UpdateFeed;
+  updateFeedUrl: string;
+  /** Version of the previous run; differs on the first launch after an update. */
+  lastRunVersion?: string;
   /** Hub port; takes effect at the next start. `LAN_PORT` in the environment overrides it. */
   lanPort?: number;
   autoStart?: boolean;
@@ -38,13 +46,35 @@ export interface SecretCodec {
   decrypt(cipher: string): string;
 }
 
-export const DEFAULT_STATE: DesktopState = { autoUpdate: true };
+export const DEFAULT_STATE: DesktopState = {
+  updateMode: 'immediate',
+  updateFeed: 'tango',
+  updateFeedUrl: DEFAULT_FEED_URL,
+};
+
+function feedUrlOrDefault(v: unknown): string {
+  if (typeof v !== 'string') return DEFAULT_FEED_URL;
+  try {
+    return normalizeFeedUrl(v);
+  } catch {
+    return DEFAULT_FEED_URL;
+  }
+}
 
 export function loadState(file: string): DesktopState {
   try {
-    const parsed = JSON.parse(readFileSync(file, 'utf8')) as Partial<DesktopState> | null;
+    const parsed = JSON.parse(readFileSync(file, 'utf8')) as
+      (Partial<DesktopState> & { autoUpdate?: unknown }) | null;
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ...DEFAULT_STATE };
-    return { ...DEFAULT_STATE, ...parsed, autoUpdate: parsed.autoUpdate !== false };
+    const { autoUpdate, ...rest } = parsed;
+    const legacyMode: UpdateMode = autoUpdate === false ? 'off' : DEFAULT_STATE.updateMode;
+    return {
+      ...DEFAULT_STATE,
+      ...rest,
+      updateMode: isUpdateMode(rest.updateMode) ? rest.updateMode : legacyMode,
+      updateFeed: isUpdateFeed(rest.updateFeed) ? rest.updateFeed : DEFAULT_STATE.updateFeed,
+      updateFeedUrl: feedUrlOrDefault(rest.updateFeedUrl),
+    };
   } catch {
     return { ...DEFAULT_STATE };
   }

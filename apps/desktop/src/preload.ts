@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('jukebox', {
     ipcRenderer.invoke('jukebox:installUpdate'),
   checkForUpdates: (): Promise<{ ok: boolean; message: string; version?: string }> =>
     ipcRenderer.invoke('jukebox:checkForUpdates'),
+  /** This build's `ReleaseNotes` (version, date, changes, checklist) or null. */
+  releaseNotes: (): Promise<unknown> => ipcRenderer.invoke('jukebox:releaseNotes'),
   /** Quits the app after the owner password. */
   quit: (): Promise<boolean> => ipcRenderer.invoke('jukebox:quit'),
   /** The setup page calls this after `POST /api/setup` succeeded; the TV window moves to /tv. */

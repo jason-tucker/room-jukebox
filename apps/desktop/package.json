@@ -12,7 +12,7 @@
     "lint": "eslint .",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run",
-    "dist:win": "pnpm run build && electron-builder --win --x64"
+    "dist:win": "node ../../scripts/release-notes.mjs && pnpm run build && electron-builder --win --x64"
   },
   "dependencies": {
     "electron-updater": "6.8.10"

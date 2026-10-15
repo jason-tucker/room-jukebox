@@ -1,6 +1,8 @@
-import { generateKeyPairSync, sign } from 'node:crypto';
-import { readFileSync } from 'node:fs';
-import { createPublicKey } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { createPrivateKey, createPublicKey, generateKeyPairSync, sign } from 'node:crypto';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { checkSignedFeed, feedMatchesUpdateInfo, verifyFeedSignature } from '../src/feed-signature';
 import type { FetchLike } from '../src/feed-signature';
@@ -84,8 +86,8 @@ function fakeFetch(
 }
 
 describe('signed feed check', () => {
-  const BASE = 'https://github.com/o/r/releases/download';
-  const yml = `${BASE}/v0.0.5/latest.yml`;
+  const BASE = 'https://github.com/o/r/releases/download/v0.0.5';
+  const yml = `${BASE}/latest.yml`;
 
   it('passes with a good signature and reports the Date header', async () => {
     const { fetch, urls } = fakeFetch({ [yml]: YML, [`${yml}.sig`]: SIG });
@@ -129,5 +131,26 @@ describe('signed feed check', () => {
   it('aborts when latest.yml itself is missing', async () => {
     const { fetch } = fakeFetch({});
     expect((await checkSignedFeed(BASE, INFO, PUBLIC_PEM, fetch)).ok).toBe(false);
+  });
+});
+
+describe('openssl-signed latest.yml (scripts/build-win.sh format)', () => {
+  it('accepts `openssl pkeyutl -sign -rawin | base64 -w0`, byte-identical to crypto.sign', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rj-sig-'));
+    const key = join(dir, 'key.pem');
+    const yml = join(dir, 'latest.yml');
+    execFileSync('openssl', ['genpkey', '-algorithm', 'ed25519', '-out', key]);
+    writeFileSync(yml, YML);
+    const sigText = execFileSync('bash', [
+      '-c',
+      `openssl pkeyutl -sign -inkey "${key}" -rawin -in "${yml}" | base64 -w0`,
+    ]).toString();
+    expect(sigText).toMatch(/^[A-Za-z0-9+/]{86}==$/); // 64 bytes, no newline
+    const pub = execFileSync('openssl', ['pkey', '-in', key, '-pubout']).toString();
+    expect(verifyFeedSignature(DATA, sigText, pub)).toBe(true);
+    expect(verifyFeedSignature(Buffer.from(`${YML} `), sigText, pub)).toBe(false);
+    // Ed25519 is deterministic: Node's signature with the same key is the same bytes.
+    const nodeSig = sign(null, DATA, createPrivateKey(readFileSync(key))).toString('base64');
+    expect(nodeSig).toBe(sigText);
   });
 });
