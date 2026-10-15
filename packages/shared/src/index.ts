@@ -20,3 +20,4 @@ export type {
 export * from './m1/state.ts';
 export * from './m1/ws.ts';
 export * from './m1/api.ts';
+export * from './m2/index.ts';
