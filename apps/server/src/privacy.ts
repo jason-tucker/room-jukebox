@@ -32,6 +32,10 @@ export const PRIVACY_POLICY: PrivacyReply = {
       body: 'Songs play in YouTube’s embedded player on the TV, which may show YouTube advertising. When the player loads, it shares basic data with YouTube (such as the TV laptop’s address and the video being played), as any embedded YouTube video does.',
     },
     {
+      heading: 'Browse YouTube',
+      body: 'When you use “Browse YouTube”, YouTube’s mobile pages are fetched by the hub laptop on your behalf, so YouTube sees the hub’s internet connection rather than your phone’s. YouTube’s cookies for that session are stored by your phone under the jukebox’s address. The jukebox records nothing beyond the song you choose. The host can turn this feature off.',
+    },
+    {
       heading: 'Cookies and local storage',
       body: 'The jukebox uses a guest cookie (your random guest ID), an owner cookie for the host’s admin page, and your browser’s local storage to remember that you accepted this notice and which jukebox addresses you have used. No tracking or advertising cookies are set by this app.',
     },

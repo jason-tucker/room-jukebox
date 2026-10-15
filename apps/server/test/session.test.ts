@@ -457,6 +457,7 @@ describe('privacy', () => {
       'Forget me',
       'not directed at children',
       'advertising',
+      'Browse YouTube',
       'cookie',
     ]) {
       expect(text).toContain(needle);

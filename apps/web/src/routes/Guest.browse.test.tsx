@@ -10,12 +10,13 @@ import { Guest } from './Guest.tsx';
 
 const h = vi.hoisted(() => ({
   state: null as GuestState | null,
+  status: 'online',
   resolve: vi.fn(),
   request: vi.fn(),
 }));
 
 vi.mock('../lib/ws.ts', () => ({
-  useSessionState: () => ({ state: h.state, status: 'online', client: null }),
+  useSessionState: () => ({ state: h.state, status: h.status, client: null }),
 }));
 
 vi.mock('../lib/api.ts', async (importOriginal) => {
@@ -68,6 +69,7 @@ function resolved(videoId: string, title: string) {
 
 describe('Guest page: Browse YouTube', () => {
   beforeEach(() => {
+    h.status = 'online';
     h.resolve.mockReset();
     h.request.mockReset();
     h.state = guestState({ search: { enabled: true, remaining: 5, low: false } });

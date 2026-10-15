@@ -9,13 +9,14 @@ import { Guest } from './Guest.tsx';
 
 const h = vi.hoisted(() => ({
   state: null as GuestState | null,
+  status: 'online',
   search: vi.fn(),
   suggest: vi.fn(),
   request: vi.fn(),
 }));
 
 vi.mock('../lib/ws.ts', () => ({
-  useSessionState: () => ({ state: h.state, status: 'online', client: null }),
+  useSessionState: () => ({ state: h.state, status: h.status, client: null }),
 }));
 
 vi.mock('../lib/api.ts', async (importOriginal) => {
@@ -87,6 +88,7 @@ async function search(q: string) {
 
 describe('Guest page', () => {
   beforeEach(() => {
+    h.status = 'online';
     h.search.mockReset();
     h.request.mockReset();
     h.suggest.mockReset();
@@ -111,6 +113,30 @@ describe('Guest page', () => {
     expect(await screen.findByText(S.guest.searchOff)).toBeInTheDocument();
     expect(screen.queryByRole('searchbox')).toBeNull();
     expect(order()).toEqual(['paste-section', 'now-playing']);
+  });
+
+  it('shows no local Added toast while the socket is open (the hub sends its own)', async () => {
+    h.status = 'open';
+    h.search.mockResolvedValue({ ok: true, status: 200, data: reply });
+    h.request.mockResolvedValue({
+      ok: true,
+      status: 201,
+      data: {
+        entry: entry({ id: 'e2', videoId: 'OPf0YbXqDm0', title: 'Uptown Funk' }),
+        duplicate: false,
+      },
+    });
+    h.state = guestState({ search: { enabled: true, remaining: 10, low: false } });
+    renderGuest();
+    await screen.findByRole('searchbox');
+    await search('uptown');
+    const rows = await screen.findAllByTestId('search-row');
+    fireEvent.click(within(rows[0]!).getByRole('button'));
+    const sheet = await screen.findByRole('dialog', { name: S.sheet.title });
+    fireEvent.click(within(sheet).getByRole('button', { name: S.sheet.confirm }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(h.request).toHaveBeenCalled();
+    expect(screen.queryByText('Added: Uptown Funk')).toBeNull();
   });
 
   it('tap a result, confirm in the sheet, results stay for the next pick', async () => {

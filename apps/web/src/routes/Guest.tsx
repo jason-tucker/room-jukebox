@@ -107,14 +107,12 @@ export function Guest() {
   );
   const onDone = useCallback(
     (reply: RequestReply) => {
-      push(
-        reply.duplicate
-          ? S.guest.alreadyQueued(reply.entry.title)
-          : S.guest.added(reply.entry.title),
-      );
+      // The hub pushes its own "Added" toast over the socket; the local one is only the fallback.
+      if (reply.duplicate) push(S.guest.alreadyQueued(reply.entry.title));
+      else if (status !== 'open') push(S.guest.added(reply.entry.title));
       setManual('');
     },
-    [push],
+    [push, status],
   );
   const flow = useRequestFlow({ submit, onDone, ctx });
 
