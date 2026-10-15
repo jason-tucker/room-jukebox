@@ -2,7 +2,7 @@ import type { ChecklistState, ReleaseNotesReply, UpdateStatus } from '@room-juke
 import { useEffect, useState, type Dispatch, type SetStateAction } from 'react';
 import { btn, Notice, Section, Spinner } from '../../components/ui.tsx';
 import { api } from '../../lib/api.ts';
-import { fmtDateTime } from '../../lib/format.ts';
+import { fmtClock, fmtDateTime } from '../../lib/format.ts';
 import { S } from '../../strings.ts';
 import type { Run } from './common.ts';
 
@@ -25,6 +25,19 @@ export function unverifiedCount(reply: ReleaseNotesReply | null): number {
   if (!reply?.notes) return 0;
   const { done } = checklistOf(reply);
   return reply.notes.checklist.filter((item) => !done[item.id]).length;
+}
+
+/** How often the desktop checks the feed in each mode (no automatic checks when off). */
+export const CHECK_INTERVAL_MS: Record<UpdateStatus['mode'], number | null> = {
+  immediate: 10 * 60_000,
+  quiet: 6 * 3600_000,
+  off: null,
+};
+
+/** When the next automatic check is due, or null (never checked, or updates off). */
+export function nextCheckAt(s: Pick<UpdateStatus, 'mode' | 'lastCheckAt'>): number | null {
+  const every = CHECK_INTERVAL_MS[s.mode];
+  return every === null || s.lastCheckAt === null ? null : s.lastCheckAt + every;
 }
 
 export function stateLine(s: UpdateStatus): string {
@@ -217,6 +230,11 @@ function Updates({ run }: { run: Run }) {
               ? T.lastCheck(fmtDateTime(status.lastCheckAt))
               : T.neverChecked}
           </p>
+          {nextCheckAt(status) !== null && (
+            <p data-testid="next-check" className="text-muted">
+              {T.nextCheck(fmtClock(nextCheckAt(status)!))}
+            </p>
+          )}
         </div>
 
         {status.message &&

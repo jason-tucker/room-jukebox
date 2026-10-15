@@ -21,7 +21,10 @@ import {
   SetupStatusReplySchema,
   SuggestReplySchema,
   HealthReplySchema,
+  HubJsonSchema,
+  RoomsReplySchema,
   UpdateStatusSchema,
+  type LinkState,
   type ChecklistPatch,
   type HelloBody,
   type PasswordChangeBody,
@@ -146,6 +149,42 @@ const VersionReplySchema = z.object({ version: z.string(), protocolVersion: z.nu
 const BackupsReplySchema = z.object({ backups: z.array(BackupReplySchema) });
 
 const enc = encodeURIComponent;
+/** `?group=<id>` for a guest page bound to `/r/<groupId>`; empty for the main group. */
+const groupQ = (group?: string, sep = '?') => (group ? `${sep}group=${enc(group)}` : '');
+
+/**
+ * `POST /api/admin/rooms/:deviceId/link` reply: the room's queue entries that were not moved into
+ * the main group (listed so the owner can re-add them; contract-m2 §3).
+ */
+export const OrphanedEntrySchema = z
+  .object({ videoId: z.string().min(1), title: z.string() })
+  .loose();
+export type OrphanedEntry = z.infer<typeof OrphanedEntrySchema>;
+export const LinkReplySchema = z
+  .object({ orphaned: z.array(OrphanedEntrySchema).optional() })
+  .loose();
+
+/** `GET /api/admin/replica/status` (server lane; fields optional until the shape is frozen). */
+export const ReplicaStatusSchema = z
+  .object({
+    snapshotAt: z.number().nullable().optional(),
+    players: z
+      .array(
+        z
+          .object({
+            deviceId: z.string(),
+            name: z.string().optional(),
+            ackedAt: z.number().nullable().optional(),
+          })
+          .loose(),
+      )
+      .optional(),
+  })
+  .loose();
+export type ReplicaStatus = z.infer<typeof ReplicaStatusSchema>;
+
+/** Strips a trailing slash: `http://192.168.1.20:8080/` → `http://192.168.1.20:8080`. */
+const base = (hub: string) => hub.replace(/\/+$/, '');
 
 /** One function per contract route. */
 export const api = {
@@ -160,11 +199,12 @@ export const api = {
     setName: (name: string | null) =>
       call('POST', '/api/guest/name', { body: { name }, schema: HelloReplySchema }),
     forget: () => call('POST', '/api/guest/forget', { body: {}, schema: OkSchema }),
-    session: () => call('GET', '/api/session', { schema: GuestStateSchema }),
+    session: (group?: string) =>
+      call('GET', `/api/session${groupQ(group)}`, { schema: GuestStateSchema }),
     resolve: (input: string) =>
       call('GET', `/api/videos/resolve?input=${enc(input)}`, { schema: ResolveReplySchema }),
-    request: (body: RequestBody) =>
-      call('POST', '/api/requests', { body, schema: RequestReplySchema }),
+    request: (body: RequestBody, group?: string) =>
+      call('POST', `/api/requests${groupQ(group)}`, { body, schema: RequestReplySchema }),
     search: (q: string) => call('POST', '/api/search', { body: { q }, schema: SearchReplySchema }),
     /**
      * YouTube's typing suggestions. null when there is nothing new to show: the hub dropped the
@@ -227,10 +267,28 @@ export const api = {
       call('POST', '/api/admin/update/install', { body: {}, schema: UpdateStatusSchema }),
     updateMode: (mode: UpdateStatus['mode']) =>
       call('POST', '/api/admin/update/mode', { body: { mode }, schema: UpdateStatusSchema }),
+    rooms: () => call('GET', '/api/admin/rooms', { schema: RoomsReplySchema.loose() }),
+    linkRoom: (deviceId: string) =>
+      call('POST', `/api/admin/rooms/${enc(deviceId)}/link`, { body: {}, schema: LinkReplySchema }),
+    splitRoom: (deviceId: string) =>
+      call('POST', `/api/admin/rooms/${enc(deviceId)}/split`, { body: {} }),
+    revokePlayer: (id: string) =>
+      call('POST', `/api/admin/players/${enc(id)}/revoke`, { body: {} }),
+    replicaStatus: () => call('GET', '/api/admin/replica/status', { schema: ReplicaStatusSchema }),
     updateFeed: (feed: UpdateStatus['feed'], url?: string) =>
       call('POST', '/api/admin/update/feed', {
         body: url === undefined ? { feed } : { feed, url },
         schema: UpdateStatusSchema,
+      }),
+  },
+
+  /** Calls a Player TV makes to its hub (another origin), authenticated with the device token. */
+  hub: {
+    info: (hub: string) => call('GET', `${base(hub)}/hub.json`, { schema: HubJsonSchema }),
+    setRoomState: (hub: string, deviceToken: string | null, linkState: LinkState) =>
+      call('POST', `${base(hub)}/api/rooms/me`, {
+        body: { linkState },
+        bearer: deviceToken,
       }),
   },
 

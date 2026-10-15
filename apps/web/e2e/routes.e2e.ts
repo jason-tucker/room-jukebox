@@ -115,7 +115,7 @@ test('guest: notice, then paste flow requests a song', async ({ page, context })
   await page.getByRole('button', { name: 'Paste link' }).click();
   await expect(page.getByRole('dialog', { name: 'Request this song?' })).toBeVisible();
   await page.getByRole('button', { name: 'Request it' }).click();
-  await expect(page.getByText('Added “Uptown Funk” to the queue.')).toBeVisible();
+  await expect(page.getByText('Added: Uptown Funk')).toBeVisible();
   expect(requests).toEqual([{ videoId: 'OPf0YbXqDm0', idempotencyKey: expect.any(String) }]);
 
   // The notice is remembered on this phone.
@@ -154,7 +154,7 @@ test('guest: search first, tap a result, request it from the sheet', async ({ pa
   const sheet = page.getByRole('dialog', { name: 'Request this song?' });
   await expect(sheet).toBeVisible();
   await sheet.getByRole('button', { name: 'Request it' }).click();
-  await expect(page.getByText('Added “Uptown Funk” to the queue.')).toBeVisible();
+  await expect(page.getByText('Added: Uptown Funk')).toBeVisible();
   await expect(rows).toHaveCount(2);
   expect(requests).toEqual([{ videoId: 'OPf0YbXqDm0', idempotencyKey: expect.any(String) }]);
 });

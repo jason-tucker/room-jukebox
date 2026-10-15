@@ -13,9 +13,21 @@
  * flip the low banner, "zero" to exhaust guest search. Admin → What's new: each "Check now" runs
  * the next update scenario (found and downloaded → up to date → error); "Install now" installs it
  * and sends the TV an "Updated to" notice.
+ *
+ * M2 (contract-m2): a fake desktop bridge (`window.jukebox`) is installed when none exists. It
+ * hears the "Basement" hub at 192.168.1.20:8080 (`?mocknohub=1`: nothing heard), pairs with owner
+ * password "jukebox1" (an address with ".66" fails the hub proof, any other address than the
+ * hub's is unreachable), and signs the player handshake. Every player socket must send `auth`
+ * first; `?mockbadhub=1` makes the hub answer with a bad proof. Player mode:
+ * /tv?mode=player&hub=http://192.168.1.20:8080&player=den-laptop&token=x (the Den room).
+ * Admin → Rooms lists Basement (the hub), Den (linked) and Garage (own queue, two songs waiting:
+ * Link it to see the orphaned-songs helper). /r/g-garage is the Garage guest page.
  */
 import type {
   AdminState,
+  LinkState,
+  ReplicaSnapshot,
+  Room,
   ChecklistState,
   EntryAdmin,
   GuestState,
@@ -26,7 +38,7 @@ import type {
   ResolveReply,
   SearchProvider,
   SearchSource,
-  ServerMessage,
+  M2ServerMessage,
   SettingsPublic,
   UpdateStatus,
   VideoCard,
@@ -82,6 +94,11 @@ type NowAdmin = EntryAdmin & Pick<M1NowPlaying, 'startedAt' | 'pausedAt' | 'accu
 
 const thumb = (id: string) => `https://i.ytimg.com/vi/${id}/mqdefault.jpg`;
 const PASSWORD = 'jukebox1';
+const HUB_HOST = '192.168.1.20:8080';
+const MAIN_GROUP = 'g-main';
+const flag = (name: string) => new URLSearchParams(location.search).has(name);
+/** The mock's "HMAC": proofs are readable strings, checked by the fake bridge. */
+const hubProof = (nonceP: string, nonceH: string) => `h:${nonceP}:${nonceH}`;
 const GUEST_ID = 'mock-guest-1';
 
 function json(status: number, body: unknown): Response {
@@ -236,6 +253,96 @@ class MockHub {
     },
   ];
   sockets = new Set<MockSocket>();
+  rooms: Room[] = [
+    {
+      deviceId: 'mock-hub',
+      name: 'Basement',
+      groupId: MAIN_GROUP,
+      linkState: 'linked',
+      lanAddress: '192.168.1.20',
+      lastSeen: Date.now(),
+    },
+    {
+      deviceId: 'den-laptop',
+      name: 'Den',
+      groupId: MAIN_GROUP,
+      linkState: 'linked',
+      lanAddress: '192.168.1.31',
+      lastSeen: Date.now(),
+    },
+    {
+      deviceId: 'garage-laptop',
+      name: 'Garage',
+      groupId: 'g-garage',
+      linkState: 'independent',
+      lanAddress: '192.168.1.42',
+      lastSeen: Date.now() - 90_000,
+    },
+  ];
+  /** Queues of split rooms' groups (the main group's queue is `queue`). */
+  groupQueues = new Map<string, EntryAdmin[]>();
+  snapshotAt = Date.now() - 4000;
+  replicaAcks = new Map<string, number>([['den-laptop', Date.now() - 4000]]);
+
+  groupName(groupId: string | null): string | null {
+    if (!groupId || groupId === MAIN_GROUP) return null;
+    return this.rooms.find((r) => r.groupId === groupId)?.name ?? null;
+  }
+
+  queueOf(groupId: string | null): EntryAdmin[] {
+    if (!groupId || groupId === MAIN_GROUP || !this.groupName(groupId)) return this.queue;
+    let q = this.groupQueues.get(groupId);
+    if (!q) {
+      q = [];
+      this.groupQueues.set(groupId, q);
+    }
+    return q;
+  }
+
+  link(deviceId: string): EntryAdmin[] | null {
+    const room = this.rooms.find((r) => r.deviceId === deviceId);
+    if (!room) return null;
+    const orphaned = room.groupId === MAIN_GROUP ? [] : this.queueOf(room.groupId);
+    this.groupQueues.delete(room.groupId);
+    Object.assign(room, { linkState: 'linked', groupId: MAIN_GROUP });
+    this.broadcast();
+    return orphaned;
+  }
+
+  split(deviceId: string): boolean {
+    const room = this.rooms.find((r) => r.deviceId === deviceId);
+    if (!room) return false;
+    Object.assign(room, { linkState: 'independent', groupId: `g-${deviceId.split('-')[0]}` });
+    this.broadcast();
+    return true;
+  }
+
+  setLink(deviceId: string, linkState: LinkState) {
+    if (linkState === 'linked') this.link(deviceId);
+    else this.split(deviceId);
+  }
+
+  snapshot(): ReplicaSnapshot {
+    this.snapshotAt = Date.now();
+    return {
+      settings: {},
+      passwordVerifier: 'mock',
+      householdKeyEpoch: 0,
+      fallbackPlaylists: [],
+      fallbackVideos: [],
+      videos: [],
+      history: [],
+      rooms: this.rooms as unknown as Record<string, unknown>[],
+      groups: [],
+      players: [],
+      quotaLog: [],
+      searchUsage: [],
+      queueEntries: this.queue as unknown as Record<string, unknown>[],
+      tombstones: [],
+      snapshotAt: this.snapshotAt,
+      hubEpoch: 1,
+    };
+  }
 
   /** Mock friendly-name check: `jukebox.home` "resolves" here; anything else shows the UDM hint. */
   friendly() {
@@ -266,6 +373,30 @@ class MockHub {
     this.#play(this.#entry(CATALOG[1]!, 'Sam', 'auto'));
     this.queue.push(this.#entry(CATALOG[2]!, 'Alex', 'request', 'guest-2'));
     this.queue.push(this.#entry(CATALOG[3]!, null, 'request', GUEST_ID));
+    this.queueOf('g-garage').push(
+      this.#entry(CATALOG[0]!, 'Robin', 'request', 'guest-3'),
+      this.#entry(CATALOG[2]!, 'Kim', 'request', 'guest-4'),
+    );
+    this.players.push(
+      {
+        id: 'den-laptop',
+        name: 'Den',
+        lanAddress: '192.168.1.31',
+        status: 'online',
+        role: 'follower',
+        lastSeen: Date.now(),
+        drift: 0.4,
+      },
+      {
+        id: 'garage-laptop',
+        name: 'Garage',
+        lanAddress: '192.168.1.42',
+        status: 'reconnecting',
+        role: 'leader',
+        lastSeen: Date.now() - 90_000,
+        drift: null,
+      },
+    );
     setInterval(() => this.#tick(), 1000);
     setInterval(() => this.#heartbeat(), 5000);
   }
@@ -342,14 +473,14 @@ class MockHub {
     return { ...rest, ...(requesterGuestId === GUEST_ID ? { mine: true } : {}) };
   }
 
-  guestState(): GuestState {
+  guestState(group: string | null = null): GuestState {
     const np = this.nowPlaying;
     return {
       revision: this.revision,
       changeSeq: this.changeSeq,
       serverTime: Date.now(),
       protocolVersion: 1,
-      roomName: this.settings.roomName,
+      roomName: this.groupName(group) ?? this.settings.roomName,
       playback: {
         state: this.playbackState,
         nowPlaying: np
@@ -361,7 +492,7 @@ class MockHub {
             }
           : null,
       },
-      queue: this.queue.map((e) => this.#pub(e)),
+      queue: this.queueOf(group).map((e) => this.#pub(e)),
       recentHistory: this.history.map((e) => this.#pub(e)),
       search: this.pageSearch
         ? { enabled: !this.searchOff, remaining: null, low: false, provider: 'unofficial' }
@@ -386,7 +517,10 @@ class MockHub {
       ...this.guestState(),
       queue: this.queue,
       recentHistory: this.history,
-      players: this.players.map((p) => ({ ...p, lastSeen: Date.now() })),
+      players: this.players.map((p) => ({
+        ...p,
+        lastSeen: p.status === 'online' ? Date.now() : p.lastSeen,
+      })),
       fallback: { playlists: this.playlists, poolSize: 57, consecutiveFailures: 0 },
       searchUsage: this.searchUsage,
       settings: { ...this.settings, fallbackPlaylists: this.playlists },
@@ -394,22 +528,25 @@ class MockHub {
     };
   }
 
-  playerState(): PlayerState {
-    const g = this.guestState();
+  playerState(deviceId: string | null = null): PlayerState {
+    const room = this.rooms.find((r) => r.deviceId === deviceId);
+    const group = room && room.groupId !== MAIN_GROUP ? room.groupId : null;
+    const g = this.guestState(group);
     const w = this.settings.wifi;
+    const suffix = group ? `r/${group}` : '';
     return {
       revision: g.revision,
       changeSeq: g.changeSeq,
       serverTime: g.serverTime,
-      protocolVersion: 1,
+      protocolVersion: 2,
       roomName: g.roomName,
       playback: g.playback,
-      upcoming: this.queue
+      upcoming: this.queueOf(group)
         .slice(0, 5)
         .map((e) => ({ title: e.title, requesterName: e.requesterName })),
       qr: {
-        lanUrl: `http://${this.lan.chosen}:${this.settings.lanPort}/`,
-        joinUrl: this.joinUrl(),
+        lanUrl: `http://${this.lan.chosen}:${this.settings.lanPort}/${suffix}`,
+        joinUrl: `${this.joinUrl()}${suffix}`,
         publicUrl: null,
         wifi: w
           ? `WIFI:T:${w.security};S:${w.ssid};P:secret123;${w.hidden ? 'H:true;' : ''};`
@@ -417,7 +554,10 @@ class MockHub {
         wifiSsid: w ? w.ssid : null,
       },
       partyCode: null,
-      me: { playerId: 'tv-hub', role: 'leader' },
+      me: {
+        playerId: deviceId ?? 'tv-hub',
+        role: deviceId === 'den-laptop' ? 'follower' : 'leader',
+      },
       status: this.playbackState === 'blocked' ? 'blocked' : 'online',
       lastError: this.lastError,
       selfTest: { autoplayBlocked: false },
@@ -539,18 +679,20 @@ class MockHub {
     name: string | null,
     guestId: string | null,
     owner: boolean,
+    group: string | null = null,
   ): Response {
+    const queue = this.queueOf(group);
     const r = this.resolve(videoId);
     if (!r) return err(422, 'not-found', 'Video not found');
     if (!r.playable) return err(422, r.reason ?? 'not-found', 'Not playable');
     if (
       !owner &&
-      this.queue.filter((e) => e.requesterGuestId === guestId).length >=
+      queue.filter((e) => e.requesterGuestId === guestId).length >=
         this.settings.limits.maxPendingPerGuest
     ) {
       return err(429, 'too-many-pending', 'Too many pending');
     }
-    const dup = this.queue.find((e) => e.videoId === videoId);
+    const dup = queue.find((e) => e.videoId === videoId);
     if (dup && !this.settings.limits.allowDuplicates) return err(409, 'duplicate', 'Duplicate');
     const v: Video = {
       videoId: r.videoId,
@@ -559,9 +701,9 @@ class MockHub {
       durationSec: r.durationSec ?? 240,
     };
     const e = this.#entry(v, owner ? 'Owner' : name, 'request', guestId);
-    this.queue.push(e);
+    queue.push(e);
     this.broadcast();
-    if (!owner) this.toastGuests(`${e.title} is in the queue (#${this.queue.length})`);
+    if (!owner) this.toastGuests(`${e.title} is in the queue (#${queue.length})`);
     return json(201, { entry: this.#pub(e), duplicate: false });
   }
 
@@ -581,6 +723,26 @@ class MockHub {
   }
 
   onClient(s: MockSocket, msg: { type: string; [k: string]: unknown }) {
+    if (s.role === 'player' && !s.authed) {
+      // contract-m2 §1: the first player message must be `auth`.
+      if (msg.type !== 'auth' || msg.proof !== `p:${String(msg.nonceP)}`) {
+        s.deliver({ type: 'bye', reason: 'bad-proof' });
+        setTimeout(() => s.close(), 20);
+        return;
+      }
+      s.authed = true;
+      s.deviceId = String(msg.deviceId);
+      const nonceH = `n${Math.random().toString(36).slice(2, 10)}`;
+      const proof = flag('mockbadhub') ? 'forged' : hubProof(String(msg.nonceP), nonceH);
+      s.deliver({ type: 'authOk', nonceH, proof });
+      s.sendState();
+      s.deliver({ type: 'replica', snapshot: this.snapshot() });
+      return;
+    }
+    if (msg.type === 'replicaAck') {
+      if (s.deviceId) this.replicaAcks.set(s.deviceId, Number(msg.snapshotAt));
+      return;
+    }
     if (msg.type === 'ping') {
       s.deliver({ type: 'pong', t0: Number(msg.t0), serverTime: Date.now() });
     } else if (msg.type === 'event' && msg.revision === this.revision) {
@@ -649,7 +811,38 @@ class MockHub {
         this.broadcast();
         return json(200, { ok: true });
       case 'GET /api/session':
-        return json(200, this.guestState());
+        return json(200, this.guestState(url.searchParams.get('group')));
+      case 'GET /hub.json':
+        return json(200, {
+          hubAddress: `http://${HUB_HOST}`,
+          hubEpoch: 1,
+          protocolVersion: 2,
+          roomName: this.settings.roomName,
+        });
+      case 'POST /api/rooms/me':
+        this.setLink('den-laptop', b.linkState as LinkState);
+        return json(200, { ok: true });
+      case 'GET /api/admin/rooms':
+        return json(200, {
+          rooms: this.rooms,
+          groups: [
+            { groupId: MAIN_GROUP, name: this.settings.roomName, leaderDeviceId: 'mock-hub' },
+            ...this.rooms
+              .filter((r) => r.groupId !== MAIN_GROUP)
+              .map((r) => ({ groupId: r.groupId, name: r.name, leaderDeviceId: r.deviceId })),
+          ],
+        });
+      case 'GET /api/admin/replica/status':
+        return json(200, {
+          snapshotAt: this.snapshotAt,
+          players: this.rooms
+            .filter((r) => r.deviceId !== 'mock-hub')
+            .map((r) => ({
+              deviceId: r.deviceId,
+              name: r.name,
+              ackedAt: this.replicaAcks.get(r.deviceId) ?? null,
+            })),
+        });
       case 'GET /api/videos/resolve': {
         const r = this.resolve(url.searchParams.get('input') ?? '');
         return r ? json(200, r) : err(404, 'not-found', 'No such video');
@@ -660,6 +853,7 @@ class MockHub {
           (b.name as string) ?? this.guestName,
           GUEST_ID,
           false,
+          url.searchParams.get('group'),
         );
       case 'POST /api/search':
       case 'POST /api/admin/search': {
@@ -887,6 +1081,24 @@ class MockHub {
       this.broadcast();
       return json(200, { ok: true });
     }
+    m = p.match(/^\/api\/admin\/rooms\/([^/]+)\/(link|split)$/);
+    if (m && method === 'POST') {
+      const id = decodeURIComponent(m[1]!);
+      if (m[2] === 'link') {
+        const orphaned = this.link(id);
+        if (orphaned === null) return err(404, 'not-found', 'No such room');
+        return json(200, { ok: true, orphaned: orphaned.map((e) => this.#pub(e)) });
+      }
+      return this.split(id) ? json(200, { ok: true }) : err(404, 'not-found', 'No such room');
+    }
+    m = p.match(/^\/api\/admin\/players\/([^/]+)\/revoke$/);
+    if (m && method === 'POST') {
+      const id = decodeURIComponent(m[1]!);
+      this.rooms = this.rooms.filter((r) => r.deviceId !== id);
+      this.players = this.players.filter((x) => x.id !== id);
+      this.broadcast();
+      return json(200, { ok: true });
+    }
     m = p.match(/^\/api\/admin\/guests\/(.+)$/);
     if (m && method === 'DELETE') {
       const gid = decodeURIComponent(m[1]!);
@@ -915,6 +1127,9 @@ class MockSocket extends EventTarget {
   readyState = 0;
   role: string;
   url: string;
+  group: string | null;
+  authed = false;
+  deviceId: string | null = null;
   onopen: ((ev: Event) => void) | null = null;
   onmessage: ((ev: MessageEvent) => void) | null = null;
   onclose: ((ev: CloseEvent) => void) | null = null;
@@ -923,7 +1138,9 @@ class MockSocket extends EventTarget {
   constructor(url: string) {
     super();
     this.url = url;
-    this.role = new URL(url).searchParams.get('role') ?? 'guest';
+    const q = new URL(url).searchParams;
+    this.role = q.get('role') ?? 'guest';
+    this.group = q.get('group');
     setTimeout(() => {
       if (this.readyState !== 0) return;
       if (this.role === 'admin' && !hub.loggedIn) {
@@ -934,21 +1151,23 @@ class MockSocket extends EventTarget {
       this.readyState = 1;
       hub.sockets.add(this);
       this.onopen?.(new Event('open'));
-      this.sendState();
+      // Players get nothing until their `auth` checks out (onClient).
+      if (this.role !== 'player') this.sendState();
     }, 50);
   }
 
   sendState() {
+    if (this.role === 'player' && !this.authed) return;
     const state =
       this.role === 'admin'
         ? hub.adminState()
         : this.role === 'player'
-          ? hub.playerState()
-          : hub.guestState();
+          ? hub.playerState(this.deviceId)
+          : hub.guestState(this.group);
     this.deliver({ type: 'state', state });
   }
 
-  deliver(msg: ServerMessage) {
+  deliver(msg: M2ServerMessage) {
     if (this.readyState !== 1) return;
     setTimeout(
       () => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(msg) })),
@@ -969,17 +1188,77 @@ class MockSocket extends EventTarget {
   }
 }
 
+/** A desktop bridge for mock mode (contract-m2 IPC names); installed only when none exists. */
+function installMockBridge(): void {
+  if (window.jukebox) return;
+  const heard = () =>
+    flag('mocknohub')
+      ? []
+      : [
+          {
+            hubId: 'mock-hub',
+            roomName: hub.settings.roomName,
+            address: '192.168.1.20',
+            port: 8080,
+            hubEpoch: 1,
+            protocolVersion: 2,
+          },
+        ];
+  const stored = { linkState: (sessionStorage.getItem('rjmock.link') as LinkState | null) ?? null };
+  const proofFor = (deviceId: string) => (nonceP: string) =>
+    Promise.resolve({ deviceId, proof: `p:${nonceP}` });
+  const params = new URLSearchParams(location.search);
+  window.jukebox = {
+    version: () => MOCK_VERSION,
+    hubs: () => [],
+    onHubs: (cb) => {
+      // "Hear" the beacon shortly after the wizard starts listening.
+      const t = setTimeout(() => cb(heard()), 300);
+      return () => clearTimeout(t);
+    },
+    pair: async ({ hubAddress, password }) => {
+      await new Promise((r) => setTimeout(r, 400));
+      if (hubAddress.includes('.66')) return { ok: false, code: 'bad-proof' };
+      if (!hubAddress.includes(HUB_HOST)) return { ok: false, code: 'unreachable' };
+      if (password !== PASSWORD) return { ok: false, code: 'bad-password' };
+      return { ok: true, roomName: hub.settings.roomName };
+    },
+    playerAuth: proofFor(params.get('player') ?? 'den-laptop'),
+    localPlayerAuth: proofFor('mock-hub'),
+    verifyAuthOk: (nonceP, nonceH, proof) => Promise.resolve(proof === hubProof(nonceP, nonceH)),
+    setLinkState: (s) => {
+      stored.linkState = s;
+      sessionStorage.setItem('rjmock.link', s);
+    },
+    setHubAddress: (url) => console.info('[mock bridge] setHubAddress', url),
+    storeKey: (k) => console.info('[mock bridge] storeKey epoch', k.keyEpoch),
+    storeReplica: (snap) => console.info('[mock bridge] storeReplica', snap.snapshotAt),
+    replicaInfo: () => ({ snapshotAt: hub.snapshotAt, hubEpoch: 1 }),
+    mode: () => ({
+      mode: params.get('mode') === 'player' ? 'player' : 'hub',
+      ...(stored.linkState ? { linkState: stored.linkState } : {}),
+      hubAddress: params.get('hub'),
+    }),
+  };
+}
+
 export function installMock(): void {
   hub = new MockHub();
+  installMockBridge();
   const realFetch = window.fetch.bind(window);
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(
       typeof input === 'string' ? input : input instanceof URL ? input.href : input.url,
       location.origin,
     );
+    const ours = url.origin === location.origin || url.host === HUB_HOST;
     if (
-      url.origin !== location.origin ||
-      !(url.pathname.startsWith('/api/') || url.pathname === '/healthz')
+      !ours ||
+      !(
+        url.pathname.startsWith('/api/') ||
+        url.pathname === '/healthz' ||
+        url.pathname === '/hub.json'
+      )
     ) {
       return realFetch(input, init);
     }

@@ -1,4 +1,4 @@
-import type { ServerMessage } from '@room-jukebox/shared';
+import type { M2ServerMessage as ServerMessage } from '@room-jukebox/shared';
 
 /** Minimal controllable WebSocket for client tests. */
 export class FakeWebSocket {

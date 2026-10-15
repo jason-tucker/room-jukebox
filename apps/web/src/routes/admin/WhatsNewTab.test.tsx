@@ -6,7 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { S } from '../../strings.ts';
 import { Admin } from './Admin.tsx';
 import type { Run } from './common.ts';
-import { UPDATE_POLL_MS, WhatsNewTab } from './WhatsNewTab.tsx';
+import { fmtClock } from '../../lib/format.ts';
+import { nextCheckAt, UPDATE_POLL_MS, WhatsNewTab } from './WhatsNewTab.tsx';
 
 vi.mock('../../lib/ws.ts', () => ({
   useSessionState: () => ({ state: null, status: 'online', client: null }),
@@ -229,7 +230,7 @@ describe('Admin tabs', () => {
       checklist: { version: '0.0.8', done: { a: true, b: true, c: true }, updatedAt: 3 },
     });
     const nav = await screen.findByRole('navigation', { name: 'Sections' });
-    await waitFor(() => expect(within(nav).getAllByRole('button')).toHaveLength(6));
+    await waitFor(() => expect(within(nav).getAllByRole('button')).toHaveLength(7));
     const tabs = within(nav).getAllByRole('button');
     expect(tabs[0]).toHaveTextContent(S.admin.tabs.now);
     expect(tabs.at(-1)).toHaveTextContent(S.admin.tabs.whatsNew);
@@ -242,5 +243,37 @@ describe('Admin tabs', () => {
       checklist: { version: '0.0.7', done: { a: true, b: true, c: true }, updatedAt: 3 },
     });
     expect(await screen.findByTestId('whats-new-badge')).toHaveTextContent('3');
+  });
+});
+
+describe('WhatsNewTab next check', () => {
+  const at = new Date(2026, 9, 15, 21, 0).getTime();
+
+  it('computes the next check from the last one and the mode', () => {
+    expect(nextCheckAt({ mode: 'immediate', lastCheckAt: at })).toBe(at + 10 * 60_000);
+    expect(nextCheckAt({ mode: 'quiet', lastCheckAt: at })).toBe(at + 6 * 3600_000);
+    expect(nextCheckAt({ mode: 'off', lastCheckAt: at })).toBeNull();
+    expect(nextCheckAt({ mode: 'immediate', lastCheckAt: null })).toBeNull();
+  });
+
+  it('shows "Next check at hh:mm" on the Updates card, and nothing when updates are off', async () => {
+    stubFetch({
+      'GET /api/admin/update-status': () => ({ body: { ...STATUS, lastCheckAt: at } }),
+      'POST /api/admin/update/mode': (init) => ({
+        body: { ...STATUS, lastCheckAt: at, mode: JSON.parse(init.body as string).mode },
+      }),
+    });
+    render(<Harness initial={REPLY} />);
+    expect(await screen.findByTestId('next-check')).toHaveTextContent(
+      T.nextCheck(fmtClock(at + 10 * 60_000)),
+    );
+    fireEvent.click(screen.getByRole('radio', { name: T.modes.quiet }));
+    await waitFor(() =>
+      expect(screen.getByTestId('next-check')).toHaveTextContent(
+        T.nextCheck(fmtClock(at + 6 * 3600_000)),
+      ),
+    );
+    fireEvent.click(screen.getByRole('radio', { name: T.modes.off }));
+    await waitFor(() => expect(screen.queryByTestId('next-check')).toBeNull());
   });
 });

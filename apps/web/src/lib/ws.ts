@@ -1,15 +1,17 @@
 import {
-  ServerMessageSchema,
+  M2ServerMessageSchema,
   type AdminState,
   type ClientMessage,
+  type M2ClientMessage,
+  type M2ServerMessage,
   type GuestState,
   type PlayerState,
   type Role,
   type ServerMessage,
 } from '@room-jukebox/shared';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, type ApiResult } from './api.ts';
-import { desktopAdminToken } from './jukebox.ts';
+import { desktopAdminToken, type PlayerProof } from './jukebox.ts';
 
 /**
  * Role-aware WebSocket client for `GET /ws` (contract-m1 "WebSocket messages").
@@ -32,6 +34,30 @@ export type StateFor<R extends Role> = R extends 'admin'
 
 export type ConnectionStatus = 'connecting' | 'open' | 'reconnecting';
 export type Toast = Extract<ServerMessage, { type: 'toast' }>;
+/** M2 messages the session client does not handle itself (`rekey`, `replica`, `replicaDelta`). */
+export type ExtraMessage = Extract<M2ServerMessage, { type: 'rekey' | 'replica' | 'replicaDelta' }>;
+
+/**
+ * Player join handshake (contract-m2 §1): on open the client sends `auth` before anything else and
+ * accepts nothing from the hub until its `authOk` proof verifies.
+ */
+export interface Handshake {
+  auth: (nonceP: string) => Promise<PlayerProof>;
+  verify: (nonceP: string, nonceH: string, proof: string) => Promise<boolean>;
+}
+
+/** Why the last handshake failed: our proof was refused (`bye bad-proof`) or the hub's was bad. */
+export type AuthProblem = 'hub-unverified' | 'player-rejected' | null;
+
+/** 16 random bytes, base64url. */
+export function makeNonce(): string {
+  const b = new Uint8Array(16);
+  globalThis.crypto.getRandomValues(b);
+  return btoa(String.fromCharCode(...b))
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+}
 
 export const PING_INTERVAL_MS = 2000;
 export const BACKOFF_MIN_MS = 1000;
@@ -72,12 +98,19 @@ export interface SessionClientOptions<R extends Role> {
   fetchSnapshot?: (() => Promise<StateFor<R> | null>) | null;
   /** Admin bearer for `&token=`; defaults to the desktop bridge. */
   tokenProvider?: () => Promise<string | null>;
+  /** M2 player handshake; without it the socket behaves as in M1. */
+  handshake?: Handshake | null;
+  /** `rekey` / `replica` / `replicaDelta` from a verified hub. */
+  onExtra?: (msg: ExtraMessage, client: SessionClient<R>) => void;
 }
 
-function defaultSnapshot<R extends Role>(role: R): (() => Promise<StateFor<R> | null>) | null {
+function defaultSnapshot<R extends Role>(
+  role: R,
+  group?: string,
+): (() => Promise<StateFor<R> | null>) | null {
   const unwrap = <T>(r: ApiResult<T>): T | null => (r.ok ? r.data : null);
   if (role === 'guest') {
-    return async () => unwrap(await api.guest.session()) as StateFor<R> | null;
+    return async () => unwrap(await api.guest.session(group)) as StateFor<R> | null;
   }
   if (role === 'admin') {
     return async () => unwrap(await api.admin.session()) as StateFor<R> | null;
@@ -93,6 +126,11 @@ export class SessionClient<R extends Role = Role> {
   lastBye: string | null = null;
   /** Number of HTTP/reconnect resyncs triggered by a changeSeq gap (diagnostics and tests). */
   resyncs = 0;
+  /** With a handshake: whether the current socket's hub proved itself. */
+  verified = false;
+  /** Last time a verified socket was open (ms); null before the first one. */
+  lastVerifiedAt: number | null = null;
+  authProblem: AuthProblem = null;
 
   #samples: OffsetSample[] = [];
   #ws: WebSocket | null = null;
@@ -112,13 +150,27 @@ export class SessionClient<R extends Role = Role> {
   #opts: SessionClientOptions<R>;
   #WS: typeof WebSocket;
   #snapshot: (() => Promise<StateFor<R> | null>) | null;
+  /** Handshake in progress: the nonce sent and messages held until `authOk` verifies. */
+  #nonceP: string | null = null;
+  #held: M2ServerMessage[] | null = null;
 
   constructor(opts: SessionClientOptions<R>) {
     this.role = opts.role;
     this.#opts = opts;
     this.#WS = opts.WebSocketImpl ?? WebSocket;
     this.#snapshot =
-      opts.fetchSnapshot === undefined ? defaultSnapshot(opts.role) : opts.fetchSnapshot;
+      opts.fetchSnapshot === undefined
+        ? defaultSnapshot(opts.role, opts.query?.group)
+        : opts.fetchSnapshot;
+  }
+
+  get #handshake(): Handshake | null {
+    return this.#opts.handshake ?? null;
+  }
+
+  /** Socket open and, with a handshake, verified. */
+  get #ready(): boolean {
+    return this.#ws?.readyState === this.#WS.OPEN && (!this.#handshake || this.verified);
   }
 
   subscribe(fn: () => void): () => void {
@@ -148,10 +200,14 @@ export class SessionClient<R extends Role = Role> {
     return Date.now() + this.offsetMs();
   }
 
-  send(msg: ClientMessage): boolean {
-    if (this.#ws?.readyState !== this.#WS.OPEN) return false;
-    this.#ws.send(JSON.stringify(msg));
+  send(msg: ClientMessage | { type: 'replicaAck'; snapshotAt: number }): boolean {
+    if (!this.#ready) return false;
+    this.#ws!.send(JSON.stringify(msg));
     return true;
+  }
+
+  #sendRaw(msg: M2ClientMessage): void {
+    if (this.#ws?.readyState === this.#WS.OPEN) this.#ws.send(JSON.stringify(msg));
   }
 
   start(): void {
@@ -166,6 +222,7 @@ export class SessionClient<R extends Role = Role> {
         this.#ws.close();
         return;
       }
+      if (this.verified) this.lastVerifiedAt = Date.now();
       this.send({ type: 'ping', t0: Date.now() });
     }, PING_INTERVAL_MS);
   }
@@ -245,7 +302,12 @@ export class SessionClient<R extends Role = Role> {
       this.status = 'open';
       this.lastMessageAt = Date.now();
       this.#acceptAny = true;
-      this.send({ type: 'ping', t0: Date.now() });
+      this.verified = false;
+      if (this.#handshake) {
+        void this.#startHandshake(ws);
+      } else {
+        this.send({ type: 'ping', t0: Date.now() });
+      }
       this.#emit();
     };
     ws.onmessage = (ev: MessageEvent) => {
@@ -256,13 +318,17 @@ export class SessionClient<R extends Role = Role> {
       } catch {
         return;
       }
-      const parsed = ServerMessageSchema.safeParse(data);
+      const parsed = M2ServerMessageSchema.safeParse(data);
       if (!parsed.success) return;
-      this.#handle(parsed.data);
+      this.#receive(parsed.data);
     };
     ws.onclose = () => {
       if (this.#ws !== ws) return;
       this.#ws = null;
+      if (this.verified) this.lastVerifiedAt = Date.now();
+      this.verified = false;
+      this.#nonceP = null;
+      this.#held = null;
       if (this.#stopped) return;
       this.status = this.status === 'connecting' ? 'connecting' : 'reconnecting';
       this.#emit();
@@ -270,8 +336,82 @@ export class SessionClient<R extends Role = Role> {
     };
   }
 
-  #handle(msg: ServerMessage): void {
+  async #startHandshake(ws: WebSocket): Promise<void> {
+    const hs = this.#handshake!;
+    const nonceP = makeNonce();
+    this.#nonceP = nonceP;
+    this.#held = [];
+    let p: PlayerProof;
+    try {
+      p = await hs.auth(nonceP);
+    } catch {
+      ws.close();
+      return;
+    }
+    if (this.#ws !== ws || this.#nonceP !== nonceP) return;
+    this.#sendRaw({ type: 'auth', deviceId: p.deviceId, nonceP, proof: p.proof });
+  }
+
+  async #verifyAuthOk(nonceH: string, proof: string): Promise<void> {
+    const ws = this.#ws;
+    const nonceP = this.#nonceP;
+    if (!ws || !nonceP || this.verified) return;
+    let ok: boolean;
+    try {
+      ok = await this.#handshake!.verify(nonceP, nonceH, proof);
+    } catch {
+      ok = false;
+    }
+    if (this.#ws !== ws) return;
+    if (!ok) {
+      this.authProblem = 'hub-unverified';
+      this.#held = null;
+      this.#emit();
+      ws.close();
+      return;
+    }
+    this.verified = true;
+    this.authProblem = null;
+    this.lastVerifiedAt = Date.now();
+    const held = this.#held ?? [];
+    this.#held = null;
+    this.send({ type: 'ping', t0: Date.now() });
+    for (const m of held) this.#handle(m);
+    this.#emit();
+  }
+
+  #receive(msg: M2ServerMessage): void {
+    if (!this.#handshake) {
+      this.#handle(msg);
+      return;
+    }
+    if (msg.type === 'authOk') {
+      void this.#verifyAuthOk(msg.nonceH, msg.proof);
+      return;
+    }
+    if (msg.type === 'bye' && !this.verified) {
+      this.lastBye = msg.reason;
+      if (msg.reason === 'bad-proof') this.authProblem = 'player-rejected';
+      this.#emit();
+      return;
+    }
+    if (!this.verified) {
+      // Hold everything until the hub's proof checks out (verification is async).
+      this.#held?.push(msg);
+      return;
+    }
+    this.#handle(msg);
+  }
+
+  #handle(msg: M2ServerMessage): void {
     switch (msg.type) {
+      case 'authOk':
+        return;
+      case 'rekey':
+      case 'replica':
+      case 'replicaDelta':
+        this.#opts.onExtra?.(msg, this);
+        return;
       case 'pong':
         this.#samples = [
           ...this.#samples,
@@ -319,29 +459,66 @@ export interface SessionView<R extends Role> {
   state: StateFor<R> | null;
   status: ConnectionStatus;
   client: SessionClient<R> | null;
+  /** With a handshake: the hub proved itself on the current socket. */
+  verified: boolean;
+  authProblem: AuthProblem;
+  lastVerifiedAt: number | null;
 }
+
+const viewOf = <R extends Role>(client: SessionClient<R>): SessionView<R> => ({
+  state: client.state,
+  status: client.status,
+  client,
+  verified: client.verified,
+  authProblem: client.authProblem,
+  lastVerifiedAt: client.lastVerifiedAt,
+});
 
 /**
  * Live projection for a role. `enabled: false` holds off connecting (the guest page first needs the
- * cookie from `POST /api/guest/hello`; the admin page needs a login).
+ * cookie from `POST /api/guest/hello`; the admin page needs a login). `origin` points the socket
+ * at another host (a Player's TV talks to the hub); `handshake` and `onExtra` are read when the
+ * client is created, so pass `handshakeKey` to say when they change.
  */
 export function useSessionState<R extends Role>(
   role: R,
-  opts: { enabled?: boolean; query?: Record<string, string> } = {},
+  opts: {
+    enabled?: boolean;
+    query?: Record<string, string>;
+    origin?: string;
+    handshake?: Handshake | null;
+    handshakeKey?: string;
+    onExtra?: SessionClientOptions<R>['onExtra'];
+  } = {},
 ): SessionView<R> {
   const enabled = opts.enabled ?? true;
   const queryKey = JSON.stringify(opts.query ?? {});
+  const origin = opts.origin;
+  const handshakeKey = opts.handshakeKey ?? '';
+  const live = useRef({ handshake: opts.handshake, onExtra: opts.onExtra });
+  useEffect(() => {
+    live.current = { handshake: opts.handshake, onExtra: opts.onExtra };
+  });
   const [view, setView] = useState<SessionView<R>>({
     state: null,
     status: 'connecting',
     client: null,
+    verified: false,
+    authProblem: null,
+    lastVerifiedAt: null,
   });
 
   useEffect(() => {
     if (!enabled) return;
     const query = JSON.parse(queryKey) as Record<string, string>;
-    const client = new SessionClient<R>({ role, query });
-    const update = () => setView({ state: client.state, status: client.status, client });
+    const client = new SessionClient<R>({
+      role,
+      query,
+      ...(origin ? { origin } : {}),
+      handshake: live.current.handshake ?? null,
+      onExtra: (msg, c) => live.current.onExtra?.(msg, c),
+    });
+    const update = () => setView(viewOf(client));
     const unsubscribe = client.subscribe(update);
     update();
     client.start();
@@ -349,7 +526,7 @@ export function useSessionState<R extends Role>(
       unsubscribe();
       client.stop();
     };
-  }, [role, enabled, queryKey]);
+  }, [role, enabled, queryKey, origin, handshakeKey]);
 
   return view;
 }

@@ -10,6 +10,8 @@ import { TvSpike } from './routes/TvSpike.tsx';
 
 export const router = createBrowserRouter([
   { path: '/', element: <Guest /> },
+  // A split room's own queue (contract-m2 §3); the QR on that room's TV points here.
+  { path: '/r/:groupId', element: <Guest /> },
   { path: '/tv', element: <Tv /> },
   { path: '/tv-spike', element: <TvSpike /> },
   { path: '/spike', element: <Spike /> },
