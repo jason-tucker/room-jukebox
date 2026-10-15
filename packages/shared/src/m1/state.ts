@@ -39,6 +39,12 @@ export const WifiSettingsSchema = z.object({
 export const SearchSourceSchema = z.enum(['page', 'api-first', 'api-only']);
 export type SearchSource = z.infer<typeof SearchSourceSchema>;
 
+/** A bare hostname: lowercase letters, digits, dots, hyphens; 1-63 chars per label; no scheme or port. */
+export const FriendlyHostSchema = z
+  .string()
+  .max(253)
+  .regex(/^[a-z0-9-]{1,63}(\.[a-z0-9-]{1,63})*$/);
+
 export const SettingsPublicSchema = z.object({
   roomName: z.string(),
   lanPort: z.number().int().nonnegative(),
@@ -56,6 +62,8 @@ export const SettingsPublicSchema = z.object({
   publicMode: z.boolean(),
   hubId: IdSchema,
   hubEpoch: z.number().int().nonnegative(),
+  /** Optional friendly LAN name (a DNS record on the owner's router), e.g. `jukebox.home`. */
+  friendlyHost: FriendlyHostSchema.nullable(),
   /** Search source (owner setting; default `page`). */
   search: z.object({ source: SearchSourceSchema }).optional(),
 });
@@ -135,6 +143,8 @@ export const PlayerStateSchema = z.object({
   upcoming: z.array(z.object({ title: z.string(), requesterName: z.string().nullable() })).max(5),
   qr: z.object({
     lanUrl: z.string(),
+    /** What the TV prints and encodes: the friendly URL when it checks out, else `lanUrl`. */
+    joinUrl: z.string(),
     publicUrl: z.string().nullable(),
     wifi: z.string().nullable(),
     wifiSsid: z.string().nullable(),

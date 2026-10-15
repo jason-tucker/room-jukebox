@@ -347,6 +347,15 @@ export const S = {
     removeWifi: 'Remove Wi-Fi QR',
     lan: 'Address in the QR code',
     lanHint: 'Pick the address phones on the party Wi-Fi can reach.',
+    friendly: 'Friendly address (optional)',
+    friendlyHost: 'Friendly host name',
+    friendlyNote:
+      'Works on networks where you can add a DNS record (UniFi UDM: Settings → Routing → DNS).',
+    friendlyOk: (host: string) => `✓ ${host} points at this laptop`,
+    friendlyCopy: 'Copy record',
+    friendlyCopied: 'Copied',
+    friendlyInvalid:
+      'Use a bare name like jukebox.home: lowercase letters, digits, dots and hyphens.',
     apiKey: 'YouTube API key',
     apiKeySaved: (last4: string) => `A key ending in ${last4} is saved.`,
     apiKeyNone: 'No key saved. Playlist import is off; search reads YouTube’s page.',

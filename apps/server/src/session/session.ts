@@ -44,7 +44,8 @@ import {
 import type { Repos, SessionData } from '../db/repo.ts';
 import { emptySessionData } from '../db/repo.ts';
 import type { LanProvider } from '../lan.ts';
-import { lanReply, wifiQrPayload } from '../lan.ts';
+import type { FriendlyCheck } from '../friendly.ts';
+import { joinUrl, lanReply, wifiQrPayload } from '../lan.ts';
 import type { SettingsService } from '../settings.ts';
 import type { YouTubeService } from '../youtube/service.ts';
 import { metaOf } from '../youtube/service.ts';
@@ -110,6 +111,7 @@ export interface SessionDeps {
   settings: SettingsService;
   youtube: YouTubeService;
   lan: LanProvider;
+  friendly?: FriendlyCheck;
   now: () => number;
   rng: () => number;
   onError?: (err: unknown) => void;
@@ -853,7 +855,7 @@ export class Session {
   toPlayerState(playerId: string): PlayerState {
     const settings = this.#d.settings.data();
     const p = this.#players.get(playerId);
-    const lan = lanReply(this.#d.lan, settings);
+    const lan = lanReply(this.#d.lan, settings, this.#d.friendly);
     const leader = this.#leader();
     const lastError = this.#meta.stopped
       ? { code: 'stopped', message: STOPPED_MESSAGE, at: this.#d.now() }
@@ -867,6 +869,7 @@ export class Session {
       })),
       qr: {
         lanUrl: lan.lanUrl,
+        joinUrl: joinUrl(lan, settings.lanPort),
         publicUrl: null,
         wifi: wifiQrPayload(settings.wifi, this.#d.settings.wifiPassword()),
         wifiSsid: settings.wifi?.ssid ? settings.wifi.ssid : null,

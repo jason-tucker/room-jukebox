@@ -17,6 +17,8 @@ import type { BackupInfo } from './db/backup.ts';
 import { closeDb, openDb } from './db/index.ts';
 import { Repos } from './db/repo.ts';
 import { installErrorHandler } from './errors.ts';
+import { FriendlyCheck, dnsResolver } from './friendly.ts';
+import type { HostResolver } from './friendly.ts';
 import type { LanProvider } from './lan.ts';
 import { lanReply, osLan } from './lan.ts';
 import { registerAdminRoutes } from './routes/admin.ts';
@@ -79,6 +81,8 @@ export interface BuildAppOptions {
   /** M0 spike: start the first matrix video as soon as the server is up. */
   spikeAutoplay?: boolean;
 
+  /** Tests: DNS lookup for the friendly address (default `dns.promises.lookup`). */
+  resolveHost?: HostResolver;
   /** Tests: YouTube/oEmbed `fetch`. */
   fetch?: FetchLike;
   /** Tests: clock (ms). */
@@ -138,6 +142,13 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const repos = new Repos(db);
   const settings = new SettingsService(repos, options.secrets ?? identitySecrets, now);
   const lan = options.lan ?? osLan;
+  const friendly = new FriendlyCheck({
+    lan,
+    settings: () => settings.data(),
+    resolve: options.resolveHost ?? dnsResolver,
+    now,
+    onChange: () => session.touch(),
+  });
   const fetchImpl = options.fetch ?? fetch;
   const api = createYouTubeApi(fetchImpl, (call) => {
     try {
@@ -159,10 +170,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     settings,
     youtube,
     lan,
+    friendly,
     now,
     rng: options.rng ?? Math.random,
     onError: (err) => app.log.error({ err }, 'session persist failed'),
   });
+
+  friendly.start();
+  app.addHook('onClose', async () => friendly.stop());
 
   let hub: WsHub | null = null;
   const ctx: AppContext = {
@@ -173,6 +188,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     suggest: new SuggestService({ fetch: fetchImpl, now }),
     session,
     lan,
+    friendly,
     hooks: options.hooks ?? {},
     now,
     backupDir,
@@ -198,7 +214,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   app.decorate('jukebox', {
     needsSetup: () => settings.needsSetup(),
     settings: () => settings.toPublic(),
-    lan: () => lanReply(lan, settings.data()),
+    lan: () => lanReply(lan, settings.data(), friendly),
     issueLocalPlayerToken: () => issueLocalPlayerToken(ctx),
     backupNow: () => backup(db, backupDir, now(), 'manual'),
     session,

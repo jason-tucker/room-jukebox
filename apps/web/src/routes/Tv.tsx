@@ -159,7 +159,8 @@ export function Tv() {
 
   const pill = pillFor(status, state, tv);
   const np = state?.playback.nowPlaying ?? null;
-  const requestUrl = state ? (state.qr.publicUrl ?? state.qr.lanUrl) : null;
+  const requestUrl = state ? (state.qr.publicUrl ?? state.qr.joinUrl) : null;
+  const lanUrlSmall = state && state.qr.joinUrl !== state.qr.lanUrl ? state.qr.lanUrl : null;
 
   return (
     <div className="relative flex h-screen w-screen overflow-hidden bg-black text-neutral-100">
@@ -261,6 +262,11 @@ export function Tv() {
           {requestUrl && (
             <div data-testid="tv-join" className="text-center text-3xl font-bold break-all">
               {displayAddress(requestUrl)}
+            </div>
+          )}
+          {lanUrlSmall && (
+            <div data-testid="tv-lan" className="text-center text-base text-neutral-400 break-all">
+              {displayAddress(lanUrlSmall)}
             </div>
           )}
           <YouTubeAttribution link={false} className="self-center text-neutral-100" />

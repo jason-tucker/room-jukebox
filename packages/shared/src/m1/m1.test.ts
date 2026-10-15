@@ -68,6 +68,7 @@ const settings = {
   publicMode: false,
   hubId: 'hub',
   hubEpoch: 1,
+  friendlyHost: null,
 };
 
 describe('entries', () => {
@@ -105,7 +106,7 @@ describe('state', () => {
       roomName: 'R',
       playback,
       upcoming: [],
-      qr: { lanUrl: 'http://x', publicUrl: null, wifi: null, wifiSsid: null },
+      qr: { lanUrl: 'http://x', joinUrl: 'http://x', publicUrl: null, wifi: null, wifiSsid: null },
       partyCode: null,
       me: { playerId: 'p', role: 'leader' },
       status: 'online',

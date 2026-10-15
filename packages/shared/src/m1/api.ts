@@ -133,6 +133,14 @@ export const LanReplySchema = z.object({
   addresses: z.array(LanAddressSchema),
   chosen: z.string(),
   lanUrl: z.string(),
+  /** The optional friendly name (`jukebox.home`) and whether it points at this laptop. */
+  friendly: z.object({
+    host: z.string().nullable(),
+    resolvesTo: z.array(z.string()),
+    ok: z.boolean(),
+    checkedAt: z.number().int().nonnegative().nullable(),
+    hint: z.string().nullable(),
+  }),
 });
 export type LanReply = z.infer<typeof LanReplySchema>;
 

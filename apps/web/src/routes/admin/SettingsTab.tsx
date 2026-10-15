@@ -13,6 +13,7 @@ export function SettingsTab(props: TabProps) {
       <SearchSourceForm {...props} />
       <WifiForm {...props} />
       <LanPicker {...props} />
+      <FriendlyForm {...props} />
       <ApiKey {...props} />
     </>
   );
@@ -385,6 +386,106 @@ function LanPicker({ run }: TabProps) {
           <SaveRow busy={busy} disabled={chosen === lan.chosen} />
         </form>
       )}
+    </Section>
+  );
+}
+
+const FRIENDLY_RE = /^[a-z0-9-]{1,63}(\.[a-z0-9-]{1,63})*$/;
+
+/** The record line inside the server's hint (`jukebox.home → 192.168.1.20`), else the whole hint. */
+function recordLine(hint: string): string {
+  return /: (\S+ → \S+) \(/.exec(hint)?.[1] ?? hint;
+}
+
+export function FriendlyForm({ run }: TabProps) {
+  const [friendly, setFriendly] = useState<LanReply['friendly'] | null>(null);
+  const [host, setHost] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    let live = true;
+    void run(api.admin.lan()).then((r) => {
+      if (live && r.ok) {
+        setFriendly(r.data.friendly);
+        setHost(r.data.friendly.host ?? '');
+      }
+    });
+    return () => {
+      live = false;
+    };
+  }, [run]);
+
+  const value = host.trim();
+  const valid = value === '' || FRIENDLY_RE.test(value);
+
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!valid) return;
+    setBusy(true);
+    const r = await run(
+      api.admin.patchSettings({ friendlyHost: value === '' ? null : value }),
+      S.app.saved,
+    );
+    if (r.ok) {
+      const fresh = await api.admin.lan();
+      if (fresh.ok) setFriendly(fresh.data.friendly);
+    }
+    setBusy(false);
+  };
+
+  const copy = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+    } catch {
+      /* clipboard unavailable: the hint stays visible to copy by hand */
+    }
+  };
+
+  return (
+    <Section title={S.admin.friendly}>
+      <p className="text-base text-muted">{S.admin.friendlyNote}</p>
+      <form onSubmit={(e) => void submit(e)} className="flex flex-col gap-3">
+        <input
+          aria-label={S.admin.friendlyHost}
+          className={input}
+          inputMode="url"
+          autoCapitalize="none"
+          autoCorrect="off"
+          spellCheck={false}
+          placeholder="jukebox.home"
+          value={host}
+          onChange={(e) => {
+            setHost(e.target.value);
+            setCopied(false);
+          }}
+        />
+        {!valid && <p className="text-base text-danger">{S.admin.friendlyInvalid}</p>}
+        {friendly?.host &&
+          (friendly.ok ? (
+            <p role="status" className="text-base font-semibold">
+              {S.admin.friendlyOk(friendly.host)}
+            </p>
+          ) : (
+            friendly.hint && (
+              <div
+                role="status"
+                className="flex flex-wrap items-center gap-2 rounded-xl bg-warn-soft px-3 py-2 text-base text-warn-fg"
+              >
+                <span className="min-w-0 flex-1 break-words">{friendly.hint}</span>
+                <button
+                  type="button"
+                  className={btn.secondary}
+                  onClick={() => void copy(recordLine(friendly.hint ?? ''))}
+                >
+                  {copied ? S.admin.friendlyCopied : S.admin.friendlyCopy}
+                </button>
+              </div>
+            )
+          ))}
+        <SaveRow busy={busy} disabled={!valid || value === (friendly?.host ?? '')} />
+      </form>
     </Section>
   );
 }

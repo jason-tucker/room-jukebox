@@ -50,6 +50,7 @@ export function playerState(over: Partial<PlayerState> = {}): PlayerState {
     upcoming: [{ title: 'Uptown Funk', requesterName: 'Alex' }],
     qr: {
       lanUrl: 'http://192.168.1.20:8080/',
+      joinUrl: 'http://192.168.1.20:8080/',
       publicUrl: null,
       wifi: 'WIFI:T:WPA;S:PartyNet;P:pw;;',
       wifiSsid: 'PartyNet',

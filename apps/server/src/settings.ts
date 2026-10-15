@@ -191,6 +191,7 @@ export class SettingsService {
       publicMode: d.publicMode,
       hubId: d.hubId,
       hubEpoch: d.hubEpoch,
+      friendlyHost: d.friendlyHost ?? null,
       search: { source: this.searchSource() },
     };
   }
@@ -212,6 +213,7 @@ export class SettingsService {
     if (p.autoFullscreen !== undefined) d.autoFullscreen = p.autoFullscreen;
     if (p.kiosk !== undefined) d.kiosk = p.kiosk;
     if (p.publicMode !== undefined) d.publicMode = p.publicMode;
+    if (p.friendlyHost !== undefined) d.friendlyHost = p.friendlyHost;
     if (p.search !== undefined) {
       d.search = {
         source:

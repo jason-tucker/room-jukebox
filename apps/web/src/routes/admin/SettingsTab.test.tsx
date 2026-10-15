@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { S } from '../../strings.ts';
 import type { Run } from './common.ts';
-import { SearchSourceForm, WifiForm } from './SettingsTab.tsx';
+import { FriendlyForm, SearchSourceForm, WifiForm } from './SettingsTab.tsx';
 
 describe('SearchSourceForm', () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -72,5 +72,80 @@ describe('WifiForm', () => {
     expect(JSON.parse(init.body as string)).toEqual({
       wifi: { ssid: 'Net', security: 'SAE', hidden: false },
     });
+  });
+});
+
+describe('FriendlyForm', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  const lanReply = (friendly: object) => ({
+    addresses: [],
+    chosen: '192.168.1.20',
+    lanUrl: 'http://192.168.1.20:8080/',
+    friendly,
+  });
+
+  const renderForm = (friendly: object) => {
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) =>
+      Promise.resolve(
+        new Response(JSON.stringify(init?.method === 'PATCH' ? {} : lanReply(friendly)), {
+          status: 200,
+        }),
+      ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const run: Run = (p) => p;
+    render(
+      <FriendlyForm
+        state={{ settings: {} } as unknown as AdminState}
+        run={run}
+        push={() => undefined}
+        serverNow={Date.now}
+      />,
+    );
+    return fetchMock;
+  };
+
+  it('saves the host in the settings PATCH body', async () => {
+    const fetchMock = renderForm({
+      host: null,
+      resolvesTo: [],
+      ok: false,
+      checkedAt: null,
+      hint: null,
+    });
+    const field = await screen.findByLabelText(S.admin.friendlyHost);
+    expect(screen.getByRole('button', { name: S.app.save })).toBeDisabled();
+    fireEvent.change(field, { target: { value: 'jukebox.home' } });
+    fireEvent.click(screen.getByRole('button', { name: S.app.save }));
+    await waitFor(() =>
+      expect(fetchMock.mock.calls.some(([, i]) => i?.method === 'PATCH')).toBe(true),
+    );
+    const patch = fetchMock.mock.calls.find(([, i]) => i?.method === 'PATCH')!;
+    expect(patch[0]).toBe('/api/admin/settings');
+    expect(JSON.parse(patch[1]!.body as string)).toEqual({ friendlyHost: 'jukebox.home' });
+  });
+
+  it('shows the success line when the name points at this laptop', async () => {
+    renderForm({
+      host: 'jukebox.home',
+      resolvesTo: ['192.168.1.20'],
+      ok: true,
+      checkedAt: 1,
+      hint: null,
+    });
+    expect(await screen.findByText(S.admin.friendlyOk('jukebox.home'))).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: S.admin.friendlyCopy })).toBeNull();
+  });
+
+  it('shows the hint with a copy button for the record line when it does not', async () => {
+    const writeText = vi.fn(() => Promise.resolve());
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } });
+    const hint =
+      'Add a DNS record on the UDM: jukebox.home → 192.168.1.20 (UniFi Network → Settings → Routing → DNS → Create New DNS Record, type A)';
+    renderForm({ host: 'jukebox.home', resolvesTo: [], ok: false, checkedAt: 1, hint });
+    expect(await screen.findByText(hint)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: S.admin.friendlyCopy }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('jukebox.home → 192.168.1.20'));
   });
 });

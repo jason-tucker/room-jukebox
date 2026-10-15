@@ -505,6 +505,7 @@ describe('privacy', () => {
     const tv = hub.app.jukebox.session.toPlayerState(creds.playerId);
     expect(tv.qr).toEqual({
       lanUrl: 'http://192.168.1.20:8080/',
+      joinUrl: 'http://192.168.1.20:8080/',
       publicUrl: null,
       wifi: 'WIFI:T:WPA;S:Party;P:wifisecret1;;',
       wifiSsid: 'Party',

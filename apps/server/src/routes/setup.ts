@@ -28,7 +28,10 @@ export function issueLocalPlayerToken(ctx: AppContext): { playerId: string; toke
 export async function registerSetupRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   app.get('/api/setup/status', async (request): Promise<SetupStatusReply> => {
     requireLoopback(ctx, request);
-    return { needsSetup: ctx.settings.needsSetup(), lan: lanReply(ctx.lan, ctx.settings.data()) };
+    return {
+      needsSetup: ctx.settings.needsSetup(),
+      lan: lanReply(ctx.lan, ctx.settings.data(), ctx.friendly),
+    };
   });
 
   let inProgress = false;

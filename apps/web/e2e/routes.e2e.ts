@@ -231,6 +231,7 @@ test('setup wizard starts with the notice acceptance', async ({ page }) => {
           addresses: [{ interface: 'Wi-Fi', address: '192.168.1.20', cidr: '192.168.1.0/24' }],
           chosen: '192.168.1.20',
           lanUrl: 'http://192.168.1.20:8080/',
+          friendly: { host: null, resolvesTo: [], ok: false, checkedAt: null, hint: null },
         },
       },
     }),

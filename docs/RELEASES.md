@@ -2,6 +2,15 @@
 
 One section per version, newest first. `scripts/release-notes.mjs` turns the **current** version's section into `apps/desktop/build/release-notes.json` at build time (bundled into the installer), and `scripts/build-win.sh` copies the same text into `latest.yml` as `releaseNotes`. Keep every checklist line short and testable on the laptop or a phone.
 
+## 0.0.9 — 2026-10-15
+
+### Changes
+- Optional friendly address: Settings → Friendly address (for example `jukebox.home`) checks that your router's DNS record points at this laptop; the TV then prints and encodes that name instead of the IP address.
+- The hub also answers `jukebox.local` on the local network (mDNS; Android ignores `.local`).
+
+### Test
+- Settings → Friendly address `jukebox.home` + UDM record → TV shows http://jukebox.home:8080 and a phone opens it.
+
 ## 0.0.8 — 2026-10-14
 
 ### Changes

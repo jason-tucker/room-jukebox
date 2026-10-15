@@ -2,6 +2,7 @@ import { networkInterfaces } from 'node:os';
 import type { LanReply } from '@room-jukebox/shared';
 import { inCidr } from './auth/gate.ts';
 import type { SettingsData } from './db/repo.ts';
+import type { FriendlyCheck } from './friendly.ts';
 
 /** One IPv4 address of this machine (`cidr` = `address/prefix`). */
 export interface LanAddress {
@@ -57,10 +58,34 @@ export function chooseAddress(addresses: readonly LanAddress[], override: string
 
 export const lanUrl = (address: string, port: number): string => `http://${address}:${port}/`;
 
-export function lanReply(provider: LanProvider, settings: SettingsData): LanReply {
+export function lanReply(
+  provider: LanProvider,
+  settings: SettingsData,
+  friendly?: FriendlyCheck,
+): LanReply {
   const addresses = safeAddresses(provider);
   const chosen = chooseAddress(addresses, settings.lanChosen);
-  return { addresses, chosen, lanUrl: lanUrl(chosen, settings.lanPort) };
+  return {
+    addresses,
+    chosen,
+    lanUrl: lanUrl(chosen, settings.lanPort),
+    friendly: friendly
+      ? friendly.status()
+      : {
+          host: settings.friendlyHost ?? null,
+          resolvesTo: [],
+          ok: false,
+          checkedAt: null,
+          hint: null,
+        },
+  };
+}
+
+/** What the TV prints and the QR encodes: the friendly URL once it points here, else the IP URL. */
+export function joinUrl(reply: LanReply, port: number): string {
+  return reply.friendly.ok && reply.friendly.host !== null
+    ? lanUrl(reply.friendly.host, port)
+    : reply.lanUrl;
 }
 
 export function safeAddresses(provider: LanProvider): LanAddress[] {

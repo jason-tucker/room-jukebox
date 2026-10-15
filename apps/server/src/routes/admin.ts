@@ -172,6 +172,7 @@ export async function registerAdminRoutes(app: FastifyInstance, ctx: AppContext)
     requireAdmin(ctx, request);
     const patch = parse(SettingsPatchSchema, request.body);
     const settings = ctx.settings.patch(patch);
+    if (patch.friendlyHost !== undefined) await ctx.friendly.recheck();
     ctx.repos.events.append('admin.settings', { fields: Object.keys(patch) }, ctx.now());
     ctx.session.touch();
     await runHook(request, () => ctx.hooks.onSettingsChanged?.(settings));
@@ -266,7 +267,7 @@ export async function registerAdminRoutes(app: FastifyInstance, ctx: AppContext)
 
   app.get('/api/admin/lan', async (request) => {
     requireAdmin(ctx, request);
-    return lanReply(ctx.lan, ctx.settings.data());
+    return lanReply(ctx.lan, ctx.settings.data(), ctx.friendly);
   });
 
   app.patch('/api/admin/lan', async (request) => {
@@ -277,7 +278,7 @@ export async function registerAdminRoutes(app: FastifyInstance, ctx: AppContext)
     }
     ctx.settings.setData({ ...ctx.settings.data(), lanChosen: chosen });
     ctx.session.touch();
-    return lanReply(ctx.lan, ctx.settings.data());
+    return lanReply(ctx.lan, ctx.settings.data(), ctx.friendly);
   });
 
   app.get('/api/admin/logs/tail', async (request) => {

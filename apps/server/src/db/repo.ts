@@ -51,6 +51,8 @@ export interface SettingsData {
   hubEpoch: number;
   /** Owner's QR address override (`PATCH /api/admin/lan`). */
   lanChosen: string | null;
+  /** Optional friendly name for the join address (absent in older rows). */
+  friendlyHost?: string | null;
   /**
    * Absent in rows written before 0.0.5; `unofficialFallback` only in 0.0.5 rows (migrated to
    * `source` when the settings service starts).

@@ -211,6 +211,7 @@ class MockHub {
     publicMode: false,
     hubId: 'mock-hub',
     hubEpoch: 1,
+    friendlyHost: null,
     search: { source: 'page' },
   };
   playlists: PlaylistInfo[] = [
@@ -235,6 +236,31 @@ class MockHub {
     },
   ];
   sockets = new Set<MockSocket>();
+
+  /** Mock friendly-name check: `jukebox.home` "resolves" here; anything else shows the UDM hint. */
+  friendly() {
+    const host = this.settings.friendlyHost;
+    if (host === null) {
+      return { host: null, resolvesTo: [], ok: false, checkedAt: null, hint: null };
+    }
+    const ok = host === 'jukebox.home';
+    return {
+      host,
+      resolvesTo: ok ? [this.lan.chosen] : [],
+      ok,
+      checkedAt: Date.now(),
+      hint: ok
+        ? null
+        : `Add a DNS record on the UDM: ${host} → ${this.lan.chosen} (UniFi Network → Settings → Routing → DNS → Create New DNS Record, type A)`,
+    };
+  }
+
+  joinUrl() {
+    const f = this.friendly();
+    return f.ok && f.host
+      ? `http://${f.host}:${this.settings.lanPort}/`
+      : `http://${this.lan.chosen}:${this.settings.lanPort}/`;
+  }
 
   constructor() {
     this.#play(this.#entry(CATALOG[1]!, 'Sam', 'auto'));
@@ -383,6 +409,7 @@ class MockHub {
         .map((e) => ({ title: e.title, requesterName: e.requesterName })),
       qr: {
         lanUrl: `http://${this.lan.chosen}:${this.settings.lanPort}/`,
+        joinUrl: this.joinUrl(),
         publicUrl: null,
         wifi: w
           ? `WIFI:T:${w.security};S:${w.ssid};P:secret123;${w.hidden ? 'H:true;' : ''};`
@@ -766,6 +793,7 @@ class MockHub {
         return json(200, {
           ...this.lan,
           lanUrl: `http://${this.lan.chosen}:${this.settings.lanPort}/`,
+          friendly: this.friendly(),
         });
       case 'PATCH /api/admin/lan':
         this.lan.chosen = String(b.chosen);
@@ -826,6 +854,7 @@ class MockHub {
             ],
             chosen: this.lan.chosen,
             lanUrl: `http://${this.lan.chosen}:8080/`,
+            friendly: this.friendly(),
           },
         });
       case 'POST /api/setup':

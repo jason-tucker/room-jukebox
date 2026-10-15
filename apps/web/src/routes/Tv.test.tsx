@@ -165,3 +165,35 @@ describe('/tv notices and version', () => {
     expect(await within(toasts).findByText('Updating in 15 s')).toBeInTheDocument();
   });
 });
+
+describe('/tv join address', () => {
+  beforeEach(() => {
+    FakeWebSocket.reset();
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    window.history.replaceState(null, '', '/tv?player=tv1&token=t0k');
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const show = async (qr: Partial<ReturnType<typeof playerState>['qr']>) => {
+    render(<Tv />);
+    await waitFor(() => expect(FakeWebSocket.instances.length).toBe(1));
+    const ws = FakeWebSocket.last();
+    const base = playerState();
+    act(() => {
+      ws.open();
+      ws.receive({ type: 'state', state: { ...base, qr: { ...base.qr, ...qr } } });
+    });
+  };
+
+  it('prints joinUrl big and keeps the IP URL small underneath when they differ', async () => {
+    await show({ joinUrl: 'http://jukebox.home:8080/' });
+    expect(await screen.findByTestId('tv-join')).toHaveTextContent('jukebox.home:8080');
+    expect(screen.getByTestId('tv-lan')).toHaveTextContent('192.168.1.20:8080');
+  });
+
+  it('shows only the IP address when joinUrl is the IP URL', async () => {
+    await show({});
+    expect(await screen.findByTestId('tv-join')).toHaveTextContent('192.168.1.20:8080');
+    expect(screen.queryByTestId('tv-lan')).toBeNull();
+  });
+});

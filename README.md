@@ -69,6 +69,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 overrides the executable.) It deletes every firewall rule bound to `Room Jukebox.exe` and re-adds the
 two Allow rules.
 
+### Friendly address
+
+Optional. If your router is a UniFi UDM you can give the jukebox a readable address such as
+`jukebox.home` instead of `192.168.1.20:8080`.
+
+1. Give the laptop a DHCP reservation first (UniFi Network app → Client Devices → the laptop →
+   Settings → Fixed IP Address) so its IP does not change.
+2. UniFi Network app → Settings → Routing → DNS → Create New DNS Record. Type **A**, Name
+   `jukebox.home` (or any name), IP = the laptop's reserved IP.
+3. In the jukebox admin page: Settings → Friendly address, type the same name and Save.
+
+The page shows a green check when the name points at this laptop, otherwise the exact record to add.
+Until the check passes the TV keeps showing the IP address, so nothing breaks if the record is
+missing or the laptop moves to another network. The app also answers `jukebox.local` on the local
+network (mDNS) without any router setup; Android ignores `.local` names, so use the DNS record
+there.
+
 ### Command-line flags (M0)
 
 Add them to the shortcut's _Target_ after the closing quote of the exe path:

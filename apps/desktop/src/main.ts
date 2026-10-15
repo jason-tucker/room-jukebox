@@ -31,6 +31,7 @@ import type { DesktopState, SecretCodec } from './desktop-state';
 import { pickTvDisplay, tvConnected } from './display';
 import { loadReleaseNotes } from './release-notes';
 import { setupLogging } from './logging';
+import { startMdns } from './mdns';
 import { lanAddresses } from './net';
 import type { LanAddress } from './net';
 import { errorPageUrl, passwordPageUrl } from './pages';
@@ -905,6 +906,12 @@ async function startHub(root: string): Promise<boolean> {
     protocolVersion: PROTOCOL_VERSION,
     log,
   });
+  const mdns = startMdns({
+    address: () => server.jukebox.lan().chosen,
+    friendlyHost: () => server.jukebox.settings().friendlyHost,
+    log,
+  });
+  app.once('before-quit', () => mdns.stop());
   pageOrigin = `http://${opts.loopback}:${LAN_PORT}`;
   apiBase = `http://127.0.0.1:${LAN_PORT}`;
   return true;

@@ -11,6 +11,7 @@ import {
 } from './auth/guest-cookie.ts';
 import type { Repos } from './db/repo.ts';
 import { HttpError } from './errors.ts';
+import type { FriendlyCheck } from './friendly.ts';
 import type { LanProvider } from './lan.ts';
 import { safeAddresses } from './lan.ts';
 import type { Session } from './session/session.ts';
@@ -55,6 +56,7 @@ export interface AppContext {
   suggest: SuggestService;
   session: Session;
   lan: LanProvider;
+  friendly: FriendlyCheck;
   hooks: AppHooks;
   now: () => number;
   backupDir: string;
