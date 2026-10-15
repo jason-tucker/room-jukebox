@@ -66,7 +66,7 @@ export interface BuildAppOptions {
   /** Server log file, for `GET /api/admin/logs/tail`. Without it the tail is empty. */
   logFile?: string;
   /** The installed version's bundled release notes (desktop). Standalone: none. */
-  releaseNotes?: ReleaseNotes;
+  releaseNotes?: ReleaseNotes | null;
   /** The desktop auto-updater behind `/api/admin/update*`. Standalone: none (503). */
   updater?: UpdaterApi;
 
