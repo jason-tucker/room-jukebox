@@ -62,16 +62,14 @@ export function QueueTab({ state, run }: TabProps) {
             </button>
             <button
               type="button"
-              className={btn.ghost}
+              className={btn.danger}
               aria-label={`${S.app.remove}: ${e.title}`}
               onClick={() => remove(e)}
             >
-              <svg aria-hidden viewBox="0 0 24 24" className="size-6" fill="currentColor">
-                <path
-                  d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7l-1.4-1.4L9.2 12 2.9 5.7l1.4-1.4 6.3 6.3 6.3-6.3z"
-                  transform="translate(1.4 0)"
-                />
+              <svg aria-hidden viewBox="0 0 24 24" className="size-5" fill="currentColor">
+                <path d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L12 13.4l-6.3 6.3-1.4-1.4L10.6 12 4.3 5.7l1.4-1.4L12 10.6l6.3-6.3z" />
               </svg>
+              <span aria-hidden>{S.app.remove}</span>
             </button>
           </>
         )}
