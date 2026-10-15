@@ -1,9 +1,16 @@
-import type { PlayerState } from '@room-jukebox/shared';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import {
+  M2_PROTOCOL_VERSION,
+  type HubJson,
+  type LinkState,
+  type PlayerState,
+} from '@room-jukebox/shared';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { useToasts } from '../components/Toasts.tsx';
 import { YouTubeAttribution } from '../components/YouTubeAttribution.tsx';
-import { onDesktopToast } from '../lib/jukebox.ts';
+import { displayHubAddress, normalizeHubAddress } from '../lib/hub.ts';
+import { bridge, callBridge, desktopMemory, onDesktopToast } from '../lib/jukebox.ts';
 import { api } from '../lib/api.ts';
+import { readLocal, writeLocal } from '../lib/storage.ts';
 import { QrCode } from '../lib/qr.tsx';
 import {
   DEFAULT_TUNING,
@@ -11,17 +18,33 @@ import {
   TvPlayback,
   type TvSnapshot,
 } from '../lib/tvPlayback.ts';
-import { useSessionState, type ConnectionStatus } from '../lib/ws.ts';
+import {
+  useSessionState,
+  type ConnectionStatus,
+  type Handshake,
+  type SessionClientOptions,
+} from '../lib/ws.ts';
 import { S } from '../strings.ts';
 
 /*
- * /tv: the hub's TV window (plan §3.6). The desktop injects `?player=<deviceId>&token=<deviceToken>`.
+ * /tv: the TV window (plan §3.6). The desktop injects `?player=<deviceId>&token=<deviceToken>`.
+ * Hub mode (default): the socket goes to this origin. Player mode (`?mode=player&hub=<url>`,
+ * contract-m2): the socket goes to the hub, the join popup counts down on every start, and the
+ * pill says when the hub has been missing for 20 s. In both modes, when the desktop bridge offers
+ * the proof functions, the socket runs the auth/authOk handshake before accepting any state.
  * Layout rule: the player box is never covered by anything (YouTube player policy); everything
  * else, including the Start Music prompt, lives in the right column.
  * Diagnostics knobs as on the spike page: ?deadband=1.25 ?minseek=2500 ?lead=0.
  */
 
 type Pill = keyof typeof S.tv.pill;
+type TvPill = Pill | 'lost';
+
+/** No verified hub for this long → "Looking for the <room> laptop…" (plan §3.5). */
+export const HUB_LOST_MS = 20_000;
+/** Join popup countdown (plan §0). */
+export const JOIN_COUNTDOWN_MS = 10_000;
+const HUB_ROOM_KEY = 'rj.hubRoom';
 
 export function pillFor(
   connection: ConnectionStatus,
@@ -39,12 +62,52 @@ export function pillFor(
   return 'online';
 }
 
-const PILL_CLASS: Record<Pill, string> = {
+const PILL_CLASS: Record<TvPill, string> = {
   online: 'bg-emerald-600 text-white',
   delayed: 'bg-amber-400 text-black',
   reconnecting: 'bg-orange-600 text-white',
   start: 'bg-teal-400 text-black',
   looking: 'bg-neutral-600 text-white',
+  lost: 'bg-neutral-600 text-white',
+  update: 'bg-red-600 text-white',
+  unverified: 'bg-red-600 text-white',
+};
+
+/** The player-mode states layered over `pillFor` (most important first). */
+export function playerPill(
+  base: Pill,
+  p: { updateRequired: boolean; unverified: boolean; lost: boolean },
+): TvPill {
+  if (p.updateRequired) return 'update';
+  if (p.unverified) return 'unverified';
+  if (p.lost) return 'lost';
+  return base;
+}
+
+/** The handshake the bridge supports for this mode, or null (M1 behaviour). */
+function bridgeHandshake(playerMode: boolean): Handshake | null {
+  const b = bridge();
+  const auth = playerMode ? b?.playerAuth : b?.localPlayerAuth;
+  const verify = b?.verifyAuthOk;
+  if (typeof auth !== 'function' || typeof verify !== 'function') return null;
+  return { auth: (n) => auth(n), verify: (n, h, p) => verify(n, h, p) };
+}
+
+const onExtra: NonNullable<SessionClientOptions<'player'>['onExtra']> = (msg, client) => {
+  if (msg.type === 'rekey') {
+    void callBridge('storeKey', { householdKey: msg.householdKey, keyEpoch: msg.keyEpoch });
+  } else if (msg.type === 'replica') {
+    const store = bridge()?.storeReplica;
+    if (typeof store !== 'function') return;
+    void (async () => {
+      try {
+        await store(msg.snapshot);
+      } catch {
+        return; // not stored: no ack, the hub sends the next snapshot anyway
+      }
+      client.send({ type: 'replicaAck', snapshotAt: msg.snapshot.snapshotAt });
+    })();
+  }
 };
 
 function numParam(params: URLSearchParams, key: string, fallback: number): number {
@@ -68,6 +131,13 @@ const EMPTY_TV: TvSnapshot = {
 
 export function Tv() {
   const params = useMemo(() => new URLSearchParams(window.location.search), []);
+  const playerMode = params.get('mode') === 'player';
+  const deviceToken = params.get('token');
+  const [hubAddress, setHubAddress] = useState<string | null>(() => {
+    const raw = params.get('hub');
+    return playerMode && raw ? normalizeHubAddress(raw) : null;
+  });
+  const [handshake] = useState(() => bridgeHandshake(playerMode));
   const query = useMemo(() => {
     const q: Record<string, string> = {};
     const player = params.get('player');
@@ -85,7 +155,103 @@ export function Tv() {
     [params],
   );
 
-  const { state, status, client } = useSessionState('player', { query });
+  const { state, status, client, verified, authProblem, lastVerifiedAt } = useSessionState(
+    'player',
+    {
+      query,
+      ...(hubAddress ? { origin: hubAddress } : {}),
+      handshake,
+      onExtra,
+    },
+  );
+  const [startedAt] = useState(() => Date.now());
+
+  // ---- Player mode: hub info, link state, join popup, hub-lost timer ----
+  const [hubInfo, setHubInfo] = useState<HubJson | null>(null);
+  useEffect(() => {
+    if (!playerMode || !hubAddress) return;
+    let live = true;
+    void api.hub.info(hubAddress).then((r) => {
+      if (!live || !r.ok) return;
+      setHubInfo(r.data);
+      writeLocal(HUB_ROOM_KEY, r.data.roomName);
+    });
+    return () => {
+      live = false;
+    };
+  }, [playerMode, hubAddress]);
+  const [cachedRoom] = useState(() => readLocal(HUB_ROOM_KEY));
+  const hubRoom = hubInfo?.roomName || cachedRoom || state?.roomName || null;
+
+  const [linkState, setLinkState] = useState<LinkState>(() =>
+    params.get('link') === 'independent' ? 'independent' : 'linked',
+  );
+  const linkTouched = useRef(false);
+  useEffect(() => {
+    if (!playerMode) return;
+    let live = true;
+    void desktopMemory().then((m) => {
+      if (live && m.linkState && !linkTouched.current) setLinkState(m.linkState);
+    });
+    return () => {
+      live = false;
+    };
+  }, [playerMode]);
+
+  // The popup starts with the first verified state after this page started (every start).
+  const [popupEnd, setPopupEnd] = useState<number | null>(null);
+  const popupStarted = useRef(false);
+  useEffect(() => {
+    if (!client || !playerMode) return;
+    const check = () => {
+      if (popupStarted.current || !client.state) return;
+      if (handshake && !client.verified) return;
+      popupStarted.current = true;
+      setPopupEnd(Date.now() + JOIN_COUNTDOWN_MS);
+    };
+    return client.subscribe(check);
+  }, [client, playerMode, handshake]);
+
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!playerMode) return;
+    const t = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(t);
+  }, [playerMode]);
+
+  const popupLeft = popupEnd === null ? 0 : Math.ceil((popupEnd - now) / 1000);
+  const popupOpen = playerMode && popupEnd !== null && popupLeft > 0;
+
+  const flipLink = useCallback(async () => {
+    const prev = linkState;
+    const next: LinkState = prev === 'linked' ? 'independent' : 'linked';
+    linkTouched.current = true;
+    setLinkState(next);
+    void callBridge('setLinkState', next);
+    if (!hubAddress) return;
+    const r = await api.hub.setRoomState(hubAddress, deviceToken, next);
+    if (!r.ok) {
+      setLinkState(prev);
+      void callBridge('setLinkState', prev);
+    }
+  }, [linkState, hubAddress, deviceToken]);
+
+  const connectedNow = handshake ? verified && status === 'open' : status === 'open';
+  const lost = playerMode && !connectedNow && now - (lastVerifiedAt ?? startedAt) >= HUB_LOST_MS;
+  const updateRequired =
+    playerMode &&
+    ((!!state && state.protocolVersion !== M2_PROTOCOL_VERSION) ||
+      (!!hubInfo && hubInfo.protocolVersion !== M2_PROTOCOL_VERSION));
+
+  const [addressDraft, setAddressDraft] = useState('');
+  const submitAddress = (e: FormEvent) => {
+    e.preventDefault();
+    const url = normalizeHubAddress(addressDraft);
+    if (!url) return;
+    void callBridge('setHubAddress', url);
+    setAddressDraft('');
+    setHubAddress(url);
+  };
   const containerRef = useRef<HTMLDivElement>(null);
   const playbackRef = useRef<TvPlayback | null>(null);
   const [tv, setTv] = useState<TvSnapshot>(EMPTY_TV);
@@ -157,7 +323,17 @@ export function Tv() {
     };
   }, []);
 
-  const pill = pillFor(status, state, tv);
+  const basePill = pillFor(status, state, tv);
+  const pill: TvPill = playerMode
+    ? playerPill(basePill, {
+        updateRequired,
+        unverified: authProblem === 'hub-unverified' && !verified,
+        lost,
+      })
+    : authProblem === 'hub-unverified' && !verified
+      ? 'unverified'
+      : basePill;
+  const pillText = pill === 'lost' ? S.tv.lookingFor(hubRoom) : S.tv.pill[pill];
   const np = state?.playback.nowPlaying ?? null;
   const requestUrl = state ? (state.qr.publicUrl ?? state.qr.joinUrl) : null;
   const lanUrlSmall = state && state.qr.joinUrl !== state.qr.lanUrl ? state.qr.lanUrl : null;
@@ -179,9 +355,83 @@ export function Tv() {
             data-testid="tv-pill"
             className={`shrink-0 rounded-full px-3 py-1 text-base font-semibold ${PILL_CLASS[pill]}`}
           >
-            {S.tv.pill[pill]}
+            {pillText}
           </span>
         </div>
+
+        {playerMode && (
+          <p data-testid="tv-link-caption" className="-mt-2 text-base text-neutral-400">
+            {linkState === 'linked' ? S.tv.linkedTo(hubRoom ?? S.app.name) : S.tv.ownQueue}
+          </p>
+        )}
+
+        {authProblem && !verified && (
+          <div
+            role="alert"
+            data-testid="tv-auth-problem"
+            className="flex items-center gap-2 rounded-xl bg-neutral-800 p-3 text-lg"
+          >
+            <span aria-hidden className="size-3 shrink-0 rounded-full bg-red-500" />
+            {authProblem === 'hub-unverified' ? S.tv.hubUnverified : S.tv.playerRejected}
+          </div>
+        )}
+
+        {updateRequired && (
+          <div role="status" className="rounded-xl bg-neutral-800 p-3 text-lg">
+            {S.tv.updateRequired}
+          </div>
+        )}
+
+        {popupOpen && (
+          <div
+            role="dialog"
+            aria-label={S.tv.join(hubRoom ?? S.app.name)}
+            data-testid="join-popup"
+            className="relative z-20 flex flex-col gap-3 rounded-2xl bg-neutral-800 p-4"
+          >
+            <p data-testid="join-countdown" className="text-2xl font-bold">
+              {linkState === 'linked'
+                ? S.tv.joining(hubRoom ?? S.app.name, popupLeft)
+                : S.tv.staying(popupLeft)}
+            </p>
+            <button
+              type="button"
+              onClick={() => void flipLink()}
+              className="self-start rounded-full bg-neutral-100 px-5 py-2 text-lg font-semibold text-black hover:bg-white"
+            >
+              {linkState === 'linked' ? S.tv.staySeparate : S.tv.join(hubRoom ?? S.app.name)}
+            </button>
+          </div>
+        )}
+
+        {lost && (
+          <div data-testid="tv-lost" className="flex flex-col gap-2 rounded-xl bg-neutral-800 p-3">
+            {hubAddress && (
+              <p className="text-base text-neutral-300">
+                {S.tv.lastAddress(displayHubAddress(hubAddress))}
+              </p>
+            )}
+            <label htmlFor="hub-address" className="text-sm text-neutral-400">
+              {S.tv.enterHub}
+            </label>
+            <form onSubmit={submitAddress} className="flex gap-2">
+              <input
+                id="hub-address"
+                placeholder={S.tv.hubAddressPlaceholder}
+                value={addressDraft}
+                onChange={(e) => setAddressDraft(e.target.value)}
+                className="min-w-0 flex-1 rounded-lg bg-neutral-900 px-3 py-1.5 text-base text-neutral-100"
+              />
+              <button
+                type="submit"
+                disabled={!normalizeHubAddress(addressDraft)}
+                className="rounded-lg bg-neutral-600 px-3 py-1.5 text-base font-semibold disabled:opacity-50"
+              >
+                {S.tv.connect}
+              </button>
+            </form>
+          </div>
+        )}
 
         {tv.failure !== null && (
           <div

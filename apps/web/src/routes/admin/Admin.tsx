@@ -12,6 +12,7 @@ import type { Run } from './common.ts';
 import { MusicTab } from './MusicTab.tsx';
 import { NowTab } from './NowTab.tsx';
 import { QueueTab } from './QueueTab.tsx';
+import { RoomsTab } from './RoomsTab.tsx';
 import { SettingsTab } from './SettingsTab.tsx';
 import { SystemTab } from './SystemTab.tsx';
 import { unverifiedCount, WhatsNewTab } from './WhatsNewTab.tsx';
@@ -192,6 +193,9 @@ export function Admin() {
                 push={push}
                 serverNow={serverNow}
               />
+            )}
+            {tab === 'rooms' && (
+              <RoomsTab state={state} run={run} push={push} serverNow={serverNow} />
             )}
             {tab === 'whatsNew' && <WhatsNewTab reply={notes} setReply={setNotes} run={run} />}
             {tab === 'system' && (

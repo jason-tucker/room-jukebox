@@ -3,7 +3,8 @@ import { useEffect, useState, type ReactNode } from 'react';
 import { Link, Navigate } from 'react-router';
 import { btn, Field, input, Notice, Spinner, TopBar } from '../components/ui.tsx';
 import { api, type ApiFailure } from '../lib/api.ts';
-import { bridge } from '../lib/jukebox.ts';
+import { normalizeHubAddress } from '../lib/hub.ts';
+import { bridge, type HeardHub, type PairResult } from '../lib/jukebox.ts';
 import { failureText } from '../lib/messages.ts';
 import { LINKS, S } from '../strings.ts';
 
@@ -16,7 +17,21 @@ import { LINKS, S } from '../strings.ts';
 
 type Security = 'WPA' | 'SAE' | 'WEP' | 'nopass';
 const STEPS = ['welcome', 'password', 'room', 'key', 'playlists', 'wifi', 'lan', 'finish'] as const;
-type Step = (typeof STEPS)[number];
+/** Player path (M2): join a hub instead of becoming one. */
+const PLAYER_STEPS = ['welcome', 'join'] as const;
+type Step = (typeof STEPS)[number] | 'join';
+type Role = 'hub' | 'player';
+
+const hubUrl = (h: HeardHub) => `http://${h.address}:${h.port}`;
+
+/** Plain words for a failed `pair()`. */
+export function pairErrorText(r: Extract<PairResult, { ok: false }>): string {
+  if (r.code === 'bad-password' || r.code === 'unreachable' || r.code === 'bad-proof') {
+    return S.setup.pairErrors[r.code];
+  }
+  if (r.code === 'login-throttled') return S.errors['login-throttled'](r.retryAfterSec);
+  return r.message || S.errors.generic;
+}
 
 export function isLoopback(address: string): boolean {
   const a = address.toLowerCase();
@@ -41,6 +56,42 @@ export function Setup() {
   const [busy, setBusy] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
+  // M2: hubs heard on the LAN, and whether this laptop joins one (Player) or becomes one (Hub).
+  const [canPair] = useState(() => typeof bridge()?.pair === 'function');
+  const [hubs, setHubs] = useState<HeardHub[]>([]);
+  const [lastHeardRoom, setLastHeardRoom] = useState<string | null>(null);
+  const [roleChoice, setRoleChoice] = useState<Role | null>(null);
+  const [pickedHub, setPickedHub] = useState<string | null>(null);
+  const [manualAddress, setManualAddress] = useState('');
+  const [ownerPassword, setOwnerPassword] = useState('');
+  const [deviceName, setDeviceName] = useState('');
+  const [joined, setJoined] = useState(false);
+
+  useEffect(() => {
+    const b = bridge();
+    if (!canPair || !b) return;
+    let live = true;
+    const apply = (list: HeardHub[]) => {
+      if (!live || !Array.isArray(list)) return;
+      setHubs(list);
+      if (list[0]) setLastHeardRoom(list[0].roomName);
+    };
+    if (typeof b.hubs === 'function') {
+      void Promise.resolve()
+        .then(() => b.hubs!())
+        .then(apply, () => undefined);
+    }
+    let off: (() => void) | undefined;
+    try {
+      off = b.onHubs?.(apply) ?? undefined;
+    } catch {
+      off = undefined;
+    }
+    return () => {
+      live = false;
+      off?.();
+    };
+  }, [canPair]);
 
   useEffect(() => {
     let live = true;
@@ -64,9 +115,47 @@ export function Setup() {
     return <Navigate to="/admin" replace />;
   }
 
-  const index = STEPS.indexOf(step);
+  const heard = hubs.length > 0;
+  const role: Role = roleChoice ?? (canPair && heard ? 'player' : 'hub');
+  const steps: readonly Step[] = role === 'player' ? PLAYER_STEPS : STEPS;
+  const index = steps.indexOf(step);
   const go = (delta: number) =>
-    setStep(STEPS[Math.min(STEPS.length - 1, Math.max(0, index + delta))]!);
+    setStep(steps[Math.min(steps.length - 1, Math.max(0, index + delta))]!);
+  const chosenHub = hubs.find((h) => h.hubId === pickedHub) ?? hubs[0] ?? null;
+  const joinAddress = chosenHub ? hubUrl(chosenHub) : normalizeHubAddress(manualAddress);
+  const joinRoom = chosenHub?.roomName ?? lastHeardRoom;
+
+  const pickRole = (next: Role) => {
+    // Starting a second hub next to a running one is almost always a mistake: confirm it.
+    if (next === 'hub' && heard && !window.confirm(S.setup.separateConfirm(hubs[0]!.roomName))) {
+      return;
+    }
+    setRoleChoice(next);
+  };
+
+  const join = async () => {
+    const pair = bridge()?.pair;
+    if (!pair || !joinAddress) return;
+    setBusy(true);
+    setSubmitError(null);
+    let r: PairResult;
+    try {
+      r = await pair({
+        hubAddress: joinAddress,
+        password: ownerPassword,
+        deviceName: deviceName.trim(),
+      });
+    } catch {
+      r = { ok: false, code: 'unreachable' };
+    }
+    setBusy(false);
+    if (!r.ok) {
+      setSubmitError(pairErrorText(r));
+      return;
+    }
+    setOwnerPassword('');
+    setJoined(true);
+  };
   const usable = status?.lan.addresses.filter((a) => !isLoopback(a.address)) ?? [];
 
   const pwProblem =
@@ -85,6 +174,7 @@ export function Setup() {
     wifi: true,
     lan: true,
     finish: true,
+    join: !!joinAddress && ownerPassword.length > 0 && deviceName.trim().length > 0,
   };
 
   const finish = async () => {
@@ -128,6 +218,17 @@ export function Setup() {
       // the desktop picks it up from the server hook anyway
     }
   };
+
+  if (joined) {
+    return (
+      <Shell>
+        <div className="flex flex-col gap-4" data-testid="join-done">
+          <h2 className="text-3xl font-bold">{S.setup.joinDone}</h2>
+          <p className="text-lg">{S.setup.joinDoneBody}</p>
+        </div>
+      </Shell>
+    );
+  }
 
   if (done) {
     return (
@@ -190,6 +291,88 @@ export function Setup() {
               {S.footer.privacy}
             </Link>
           </p>
+          {canPair && (
+            <fieldset className="flex flex-col gap-2">
+              <legend className="mb-2 text-lg font-semibold">{S.setup.role}</legend>
+              <RoleOption
+                checked={role === 'player'}
+                onPick={() => pickRole('player')}
+                title={heard ? S.setup.joinHub(hubs[0]!.roomName) : S.setup.joinAnother}
+                body={S.setup.joinHubBody}
+              />
+              <RoleOption
+                checked={role === 'hub'}
+                onPick={() => pickRole('hub')}
+                title={heard ? S.setup.separateHub : S.setup.newHub}
+                body={heard ? S.setup.separateHubBody : S.setup.newHubBody}
+              />
+            </fieldset>
+          )}
+        </Panel>
+      );
+      break;
+    case 'join':
+      body = (
+        <Panel title={S.setup.joinTitle}>
+          <p className="text-lg">{S.setup.joinBody}</p>
+          {hubs.length > 1 && (
+            <fieldset className="flex flex-col gap-2">
+              <legend className="mb-1 text-base font-semibold">{S.setup.pickHub}</legend>
+              {hubs.map((h) => (
+                <label
+                  key={h.hubId}
+                  className="flex min-h-11 items-center gap-3 rounded-xl bg-surface px-3 text-base"
+                >
+                  <input
+                    type="radio"
+                    name="hub"
+                    className="size-6 accent-[var(--rj-accent)]"
+                    checked={chosenHub?.hubId === h.hubId}
+                    onChange={() => setPickedHub(h.hubId)}
+                  />
+                  <span className="font-semibold">{h.roomName}</span>
+                  <span className="text-muted">
+                    {h.address}:{h.port}
+                  </span>
+                </label>
+              ))}
+            </fieldset>
+          )}
+          {!heard && (
+            <>
+              <Notice tone="warn">{S.setup.turnOn(joinRoom)}</Notice>
+              <Field label={S.setup.hubAddress}>
+                <input
+                  className={input}
+                  inputMode="url"
+                  autoComplete="off"
+                  placeholder={S.setup.hubAddressPlaceholder}
+                  value={manualAddress}
+                  onChange={(e) => setManualAddress(e.target.value)}
+                />
+              </Field>
+            </>
+          )}
+          <Field label={S.setup.ownerPassword}>
+            <input
+              className={input}
+              type="password"
+              autoComplete="current-password"
+              value={ownerPassword}
+              onChange={(e) => setOwnerPassword(e.target.value)}
+            />
+          </Field>
+          <Field label={S.setup.thisRoom}>
+            <input
+              className={input}
+              maxLength={40}
+              placeholder={S.setup.thisRoomPlaceholder}
+              value={deviceName}
+              onChange={(e) => setDeviceName(e.target.value)}
+            />
+          </Field>
+          <p className="-mt-2 text-base text-muted">{S.setup.thisRoomBody}</p>
+          {submitError && <Notice tone="error">{submitError}</Notice>}
         </Panel>
       );
       break;
@@ -395,7 +578,7 @@ export function Setup() {
 
   return (
     <Shell>
-      <p className="text-base text-muted">{S.setup.stepOf(index + 1, STEPS.length)}</p>
+      <p className="text-base text-muted">{S.setup.stepOf(index + 1, steps.length)}</p>
       {body}
       <div className="mt-6 flex items-center justify-between gap-2">
         <button
@@ -406,7 +589,16 @@ export function Setup() {
         >
           {S.app.back}
         </button>
-        {step === 'finish' ? (
+        {step === 'join' ? (
+          <button
+            type="button"
+            className={btn.primary}
+            disabled={busy || !canNext.join}
+            onClick={() => void join()}
+          >
+            {busy ? S.setup.joining : S.setup.joinButton}
+          </button>
+        ) : step === 'finish' ? (
           <button
             type="button"
             className={btn.primary}
@@ -436,6 +628,34 @@ function Shell({ children }: { children: ReactNode }) {
       <TopBar title={S.setup.title} />
       <main className="mx-auto flex w-full max-w-xl flex-col gap-4 px-4 py-6">{children}</main>
     </div>
+  );
+}
+
+function RoleOption({
+  checked,
+  onPick,
+  title,
+  body,
+}: {
+  checked: boolean;
+  onPick: () => void;
+  title: string;
+  body: string;
+}) {
+  return (
+    <label className="flex min-h-11 cursor-pointer items-start gap-3 rounded-2xl bg-surface p-3 text-base">
+      <input
+        type="radio"
+        name="role"
+        className="mt-0.5 size-6 shrink-0 accent-[var(--rj-accent)]"
+        checked={checked}
+        onChange={onPick}
+      />
+      <span className="flex flex-col">
+        <span className="text-lg font-semibold">{title}</span>
+        <span className="text-muted">{body}</span>
+      </span>
+    </label>
   );
 }
 

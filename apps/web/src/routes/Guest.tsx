@@ -1,5 +1,6 @@
 import type { RequestReply } from '@room-jukebox/shared';
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { useParams } from 'react-router';
 import { BrowsePanel } from '../components/BrowsePanel.tsx';
 import {
   ForgetDoneSheet,
@@ -27,7 +28,12 @@ export function findOnYouTubeHref(userAgent: string): string {
   return `intent://www.youtube.com/results?search_query=#Intent;scheme=https;package=com.google.android.youtube;S.browser_fallback_url=${encodeURIComponent(web)};end`;
 }
 
+/**
+ * `/` (the main group) and `/r/:groupId` (a split room, contract-m2 §3): the same page, bound to
+ * that group's session, queue and requests.
+ */
 export function Guest() {
+  const { groupId } = useParams();
   const [helloDone, setHelloDone] = useState(false);
   const [noticeOpen, setNoticeOpen] = useState(false);
   const [name, setName] = useState(() => readLocal(KEYS.name) ?? '');
@@ -48,7 +54,10 @@ export function Guest() {
   const npRef = useRef<HTMLElement>(null);
   const { toasts, push } = useToasts();
 
-  const { state, status, client } = useSessionState('guest', { enabled: helloDone });
+  const { state, status, client } = useSessionState('guest', {
+    enabled: helloDone,
+    ...(groupId ? { query: { group: groupId } } : {}),
+  });
 
   // A navigation inside Browse YouTube that escaped the mirror lands here, in the iframe: go back
   // to YouTube instead of nesting the jukebox in itself.
@@ -101,9 +110,11 @@ export function Guest() {
   );
 
   const submit = useCallback(
-    (videoId: string, idempotencyKey: string) =>
-      api.guest.request({ videoId, idempotencyKey, ...(savedName ? { name: savedName } : {}) }),
-    [savedName],
+    (videoId: string, idempotencyKey: string) => {
+      const body = { videoId, idempotencyKey, ...(savedName ? { name: savedName } : {}) };
+      return groupId ? api.guest.request(body, groupId) : api.guest.request(body);
+    },
+    [savedName, groupId],
   );
   const onDone = useCallback(
     (reply: RequestReply) => {
