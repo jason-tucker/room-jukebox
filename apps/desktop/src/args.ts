@@ -2,8 +2,9 @@
 export type Mode = 'hub' | 'player';
 
 export interface CliOptions {
-  mode: Mode;
-  /** Hub base URL for Player mode, e.g. `http://192.168.1.20:8080`. */
+  /** `--mode`; undefined means "use the saved mode" (`desktop-state.mode`, default hub). */
+  mode: Mode | undefined;
+  /** Hub base URL for Player mode, e.g. `http://192.168.1.20:8080` (overrides the saved one). */
   hub: string | undefined;
   /** Electron display id that overrides the automatic TV display choice. */
   display: number | undefined;
@@ -30,12 +31,12 @@ export function parseArgs(argv: readonly string[]): CliOptions {
   if (modeFlag !== undefined && modeFlag !== 'hub' && modeFlag !== 'player') {
     throw new Error(`--mode must be "hub" or "player", got "${modeFlag}"`);
   }
-  const mode: Mode = modeFlag ?? 'hub';
+  const mode: Mode | undefined = modeFlag;
 
   const hubFlag = str('hub');
   const hub = hubFlag?.replace(/\/+$/, '');
-  if (mode === 'player' && hub === undefined) {
-    throw new Error('--mode=player needs --hub=http://<hub-ip>:8080');
+  if (hub !== undefined && !/^https?:\/\/[^/]+$/i.test(hub)) {
+    throw new Error(`--hub must be http://<hub-ip>:<port>, got "${hubFlag}"`);
   }
 
   const displayFlag = str('display');

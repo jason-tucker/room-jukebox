@@ -2,6 +2,7 @@ import dgram from 'node:dgram';
 import { networkInterfaces } from 'node:os';
 import { beaconInterfaces } from './net';
 import type { BeaconInterface } from './net';
+import { signBeacon } from './household';
 
 export const BEACON_PORT = 41234;
 const INTERVAL_MS = 2000;
@@ -13,23 +14,20 @@ export interface Logger {
   error(...args: unknown[]): void;
 }
 
-/** M0 beacon. Unsigned; M2 adds the household-key signature and hubEpoch. */
-export interface Beacon {
-  type: 'beacon';
+/** What the hub signs into each beacon besides the per-interface address and the counter. */
+export interface BeaconIdentity {
   hubId: string;
+  hubEpoch: number;
+  keyEpoch: number;
   roomName: string;
-  address: string;
-  port: number;
-  version: string;
-  protocolVersion: number;
-  counter: number;
-  bootId: string;
+  /** `subkey(householdKey, 'rj/beacon')`. */
+  beaconKey: Buffer;
 }
 
 export interface BroadcasterOptions {
-  hubId: string;
+  /** Read every tick (rekey, room rename); `null` (no household key yet) sends nothing. */
+  identity: () => BeaconIdentity | null;
   bootId: string;
-  roomName: string;
   port: number;
   version: string;
   protocolVersion: number;
@@ -56,6 +54,7 @@ export function startBroadcaster(opts: BroadcasterOptions): { stop(): void } {
   let sockets: IfaceSocket[] = [];
   let key = '';
   let counter = 0;
+  let silent = false;
 
   const rebuild = (ifaces: BeaconInterface[]): void => {
     for (const s of sockets) s.socket.close();
@@ -84,20 +83,33 @@ export function startBroadcaster(opts: BroadcasterOptions): { stop(): void } {
       key = nextKey;
       rebuild(ifaces);
     }
+    const id = opts.identity();
+    if (!id) {
+      if (!silent) opts.log.info('beacons paused: no household key yet');
+      silent = true;
+      return;
+    }
+    if (silent) opts.log.info('beacons resumed');
+    silent = false;
     counter += 1;
     for (const { iface, socket, ready } of sockets) {
       if (!ready) continue;
-      const beacon: Beacon = {
-        type: 'beacon',
-        hubId: opts.hubId,
-        roomName: opts.roomName,
-        address: iface.address,
-        port: opts.port,
-        version: opts.version,
-        protocolVersion: opts.protocolVersion,
-        counter,
-        bootId: opts.bootId,
-      };
+      const beacon = signBeacon(
+        {
+          v: 2,
+          hubId: id.hubId,
+          hubEpoch: id.hubEpoch,
+          keyEpoch: id.keyEpoch,
+          roomName: id.roomName,
+          address: iface.address,
+          port: opts.port,
+          version: opts.version,
+          protocolVersion: opts.protocolVersion,
+          bootId: opts.bootId,
+          counter,
+        },
+        id.beaconKey,
+      );
       socket.send(JSON.stringify(beacon), beaconPort, iface.broadcast, (err) => {
         if (err) opts.log.warn(`beacon send ${iface.name} -> ${iface.broadcast}: ${err.message}`);
       });
@@ -116,26 +128,21 @@ export function startBroadcaster(opts: BroadcasterOptions): { stop(): void } {
 }
 
 export interface ReceivedBeacon {
-  beacon: Beacon;
+  /** The parsed datagram, unverified (the caller checks it with a `HubDirectory`). */
+  beacon: unknown;
   from: string;
   receivedAt: string;
 }
 
-function isBeacon(value: unknown): value is Beacon {
-  if (typeof value !== 'object' || value === null) return false;
-  const v = value as Record<string, unknown>;
-  return (
-    v.type === 'beacon' &&
-    typeof v.hubId === 'string' &&
-    typeof v.address === 'string' &&
-    typeof v.port === 'number' &&
-    typeof v.counter === 'number' &&
-    typeof v.bootId === 'string'
-  );
-}
-
-/** Listens on 0.0.0.0:<beaconPort> (reuseAddr) in both modes and keeps the last beacon. */
-export function startListener(opts: { log: Logger; beaconPort?: number }): {
+/**
+ * Listens on 0.0.0.0:<beaconPort> (reuseAddr) in both modes, hands every JSON datagram to
+ * `onBeacon` with its UDP source address, and keeps the last one for diagnostics.
+ */
+export function startListener(opts: {
+  log: Logger;
+  beaconPort?: number;
+  onBeacon?: (beacon: unknown, from: string) => void;
+}): {
   last(): ReceivedBeacon | null;
   stop(): void;
 } {
@@ -152,14 +159,16 @@ export function startListener(opts: { log: Logger; beaconPort?: number }): {
     } catch {
       return;
     }
-    if (!isBeacon(parsed)) return;
+    if (typeof parsed !== 'object' || parsed === null) return;
     last = { beacon: parsed, from: rinfo.address, receivedAt: new Date().toISOString() };
-    const logKey = `${parsed.hubId}|${rinfo.address}`;
+    const hubId = (parsed as { hubId?: unknown }).hubId;
+    const logKey = `${String(hubId)}|${rinfo.address}`;
     const now = Date.now();
     if (now - (lastLogged.get(logKey) ?? 0) >= LOG_EVERY_MS) {
       lastLogged.set(logKey, now);
       opts.log.info(`beacon from ${rinfo.address}:${rinfo.port}`, parsed);
     }
+    opts.onBeacon?.(parsed, rinfo.address);
   });
   socket.bind({ address: '0.0.0.0', port: beaconPort }, () => {
     opts.log.info(`beacon listener on 0.0.0.0:${beaconPort}`);

@@ -22,6 +22,7 @@ const fakeDpapi: SecretCodec = {
 
 describe('desktop-state.json', () => {
   const DEFAULTS = {
+    mode: 'hub',
     updateMode: 'immediate',
     updateFeed: 'tango',
     updateFeedUrl: 'http://192.168.1.5:8766/',
@@ -52,6 +53,7 @@ describe('desktop-state.json', () => {
       }),
     );
     expect(loadState(join(dir, 'set.json'))).toEqual({
+      mode: 'hub',
       updateMode: 'quiet',
       updateFeed: 'github',
       updateFeedUrl: 'http://10.0.0.2:9000/feed/',

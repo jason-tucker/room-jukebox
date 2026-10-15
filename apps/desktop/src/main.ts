@@ -1,8 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { writeFileSync } from 'node:fs';
 import { hostname, networkInterfaces } from 'node:os';
 import { join } from 'node:path';
-import { PROTOCOL_VERSION } from '@room-jukebox/shared';
+import {
+  HouseholdKeySchema,
+  KeyEpochSchema,
+  LinkStateSchema,
+  M2_PROTOCOL_VERSION,
+} from '@room-jukebox/shared';
 import type { ReleaseNotes, SettingsPublic } from '@room-jukebox/shared';
 import {
   app,
@@ -24,8 +29,16 @@ import publicKeyPem from '../build/release-public.pem';
 import { buildApp } from 'server/src/app.ts';
 import type { BuildAppOptions } from 'server/src/app.ts';
 import { parseArgs } from './args';
-import type { CliOptions } from './args';
+import type { CliOptions, Mode } from './args';
 import { startBroadcaster, startListener } from './beacon';
+import { hubEndpoint, joinProof, subkey } from './household';
+import { HubDirectory } from './hubs';
+import { normalizeHubAddress, pairWithHub, playerAuthProof, verifyAuthOk } from './pairing';
+import { startPlayerLan } from './player-lan';
+import type { LanListener, PlayerHubView } from './player-lan';
+import { replicaInfo, writeReplica } from './replica-store';
+import { beaconIdentity, hubHousehold } from './server-adapter';
+import type { M2BuildAppOptions } from './server-adapter';
 import { loadState, openSecret, saveState, sealSecret } from './desktop-state';
 import type { DesktopState, SecretCodec } from './desktop-state';
 import { pickTvDisplay, tvConnected } from './display';
@@ -83,8 +96,10 @@ function persist(patch: Partial<DesktopState>): void {
 
 const envPort = Number.parseInt(process.env.LAN_PORT ?? '', 10);
 const LAN_PORT = Number.isInteger(envPort) && envPort > 0 ? envPort : (state.lanPort ?? 8080);
-const ROOM_NAME = 'Basement';
 const DEVICE_NAME = hostname();
+const REPLICA_FILE = join(app.getPath('userData'), 'replica.json');
+/** How often the hub list is swept for expired hubs and pushed to the TV page. */
+const HUBS_SWEEP_MS = 5000;
 const RELOAD_LIMIT = 5;
 const RELOAD_WINDOW_MS = 10 * 60 * 1000;
 const OWNER_IDLE_MS = 10 * 60 * 1000;
@@ -109,6 +124,15 @@ let pageOrigin = '';
 /** Where the main process talks to the hub API (always IPv4 loopback in Hub mode). */
 let apiBase = '';
 let setupMode = false;
+/** M2: the role this run is in (`--mode`, else `desktop-state.mode`); pairing switches it. */
+let runMode: Mode = opts.mode ?? state.mode;
+/** Player: the page verified the hub's `authOk` on its current connection (gates `/hub.json`). */
+let hubVerified = false;
+/** Closes whatever listeners the current role started (hub server or player listeners). */
+let stopRuntime: (() => Promise<void>) | null = null;
+/** Hub: the embedded server's `app.jukebox` (household identity for beacons). */
+let hubApi: unknown = null;
+let updateRequiredSince: number | null = null;
 let mode: WindowMode = { fullscreen: true, kiosk: false, displayId: undefined };
 /** The owner left fullscreen through the tray: no re-assert until *Show TV*. */
 let ownerLeftFullscreen = false;
@@ -141,18 +165,36 @@ function releaseNotesPath(): string {
     : join(app.getAppPath(), 'build', 'release-notes.json');
 }
 
-/** Stable per-install hub id (M2 replaces it with the household identity). */
-function hubId(): string {
-  const file = join(app.getPath('userData'), 'hub-id');
-  try {
-    return readFileSync(file, 'utf8').trim();
-  } catch {
-    const id = randomUUID();
-    mkdirSync(app.getPath('userData'), { recursive: true });
-    writeFileSync(file, id);
-    return id;
-  }
+/** This laptop's player device id, generated once and kept in desktop-state. */
+function deviceId(): string {
+  if (!state.deviceId) persist({ deviceId: randomUUID() });
+  return state.deviceId!;
 }
+
+/** Player: the hub base URL (`--hub` for this run, else the saved one). */
+function hubAddress(): string | undefined {
+  return opts.hub ?? state.hubAddress;
+}
+
+/** Player: the stored household key (base64) or undefined (unpaired, or another Windows user). */
+function householdKey(): string | undefined {
+  return openSecret(codec, state.householdKey);
+}
+
+function paired(): boolean {
+  return Boolean(
+    hubAddress() && state.hubId && householdKey() && openSecret(codec, state.deviceToken),
+  );
+}
+
+/** The key beacons are checked with: ours as a player, the hub's own as a hub. */
+function beaconKey(): Buffer | null {
+  if (runMode === 'hub') return beaconIdentity(hubHousehold(hubApi))?.beaconKey ?? null;
+  const key = householdKey();
+  return key ? subkey(key, 'rj/beacon') : null;
+}
+
+const hubs = new HubDirectory(beaconKey);
 
 type FastifyLogger = NonNullable<BuildAppOptions['loggerInstance']>;
 
@@ -222,7 +264,7 @@ async function api(path: string, init: RequestInit = {}, token?: string): Promis
 }
 
 async function needsSetup(): Promise<boolean> {
-  if (opts.mode !== 'hub') return false;
+  if (runMode !== 'hub' || !apiBase) return false;
   try {
     const res = await api('/healthz');
     const body = (await res.json()) as { needsSetup?: unknown };
@@ -243,8 +285,14 @@ function toast(level: 'info' | 'warn' | 'error', message: string, ttlMs = 8000):
 }
 
 function tvUrl(): string {
-  if (opts.mode === 'player') {
-    const query = new URLSearchParams({ player: DEVICE_NAME, hub: opts.hub ?? '' });
+  if (runMode === 'player') {
+    const hub = hubAddress();
+    const token = openSecret(codec, state.deviceToken);
+    if (!hub || !token || !paired()) {
+      log.info('player mode without a pairing: opening the join wizard');
+      return `${pageOrigin}/setup?mode=player`;
+    }
+    const query = new URLSearchParams({ player: deviceId(), hub, mode: 'player', token });
     return `${pageOrigin}/tv?${query.toString()}`;
   }
   if (setupMode) return `${pageOrigin}/setup`;
@@ -725,7 +773,7 @@ function applySettings(s: DesktopSettings): void {
 /** At start (and after setup) the server's settings are the truth for the window mode. */
 async function applyServerSettings(): Promise<void> {
   const token = openSecret(codec, state.adminToken);
-  if (!token || setupMode) return;
+  if (!token || setupMode || runMode !== 'hub') return;
   try {
     const res = await api('/api/admin/settings', {}, token);
     if (!res.ok) {
@@ -741,6 +789,7 @@ async function applyServerSettings(): Promise<void> {
 /** Updater activity source: polls `GET /api/admin/session` with the stored desktop token. */
 let lastPollStatus = '';
 async function pollActivity(): Promise<void> {
+  if (runMode !== 'hub') return;
   const token = openSecret(codec, state.adminToken);
   let status = 'ok';
   if (!token || setupMode) {
@@ -851,6 +900,30 @@ function updaterControl(): UpdaterControl {
   return updater ?? inertUpdaterControl(app.getVersion(), updateSettings, saveUpdateSettings);
 }
 
+async function listenOnLanPort(listen: () => Promise<void>, what: string): Promise<boolean> {
+  try {
+    // Dual-stack so `http://localhost` works whether Chromium picks ::1 or 127.0.0.1.
+    await listenWithRetry(listen, {
+      intervalMs: 2000,
+      timeoutMs: 30_000,
+      onRetry: (attempt) =>
+        log.warn(`port ${LAN_PORT} is in use (attempt ${attempt}); retrying in 2 s`),
+    });
+  } catch (err) {
+    if ((err as { code?: unknown }).code === 'EADDRINUSE') {
+      showError(`Port ${LAN_PORT} is in use`, [
+        `Another program is using port ${LAN_PORT}, so the ${what} could not start (tried for 30 s).`,
+        'Close the other program, or choose another port: quit Room Jukebox from the tray, set ' +
+          `"lanPort" in ${STATE_FILE} (for example 8081) and start Room Jukebox again.`,
+        `Logs: ${app.getPath('logs')}`,
+      ]);
+      return false;
+    }
+    throw err;
+  }
+  return true;
+}
+
 async function startHub(root: string): Promise<boolean> {
   const dataDir = join(app.getPath('userData'), 'data');
   const options: HubOptions = {
@@ -870,40 +943,25 @@ async function startHub(root: string): Promise<boolean> {
     updater: updaterControl(),
   };
   const server = await buildApp(options);
-  try {
-    // Dual-stack so `http://localhost` works whether Chromium picks ::1 or 127.0.0.1.
-    await listenWithRetry(
-      async () => {
-        await server.listen({ port: LAN_PORT, host: '::' });
-      },
-      {
-        intervalMs: 2000,
-        timeoutMs: 30_000,
-        onRetry: (attempt) =>
-          log.warn(`port ${LAN_PORT} is in use (attempt ${attempt}); retrying in 2 s`),
-      },
-    );
-  } catch (err) {
-    if ((err as { code?: unknown }).code === 'EADDRINUSE') {
-      showError(`Port ${LAN_PORT} is in use`, [
-        `Another program is using port ${LAN_PORT}, so the hub server could not start (tried for 30 s).`,
-        'Close the other program, or choose another port: quit Room Jukebox from the tray, set ' +
-          `"lanPort" in ${STATE_FILE} (for example 8081) and start Room Jukebox again.`,
-        `Logs: ${app.getPath('logs')}`,
-      ]);
-      return false;
-    }
-    throw err;
+  if (
+    !(await listenOnLanPort(
+      () => server.listen({ port: LAN_PORT, host: '::' }).then(() => undefined),
+      'hub server',
+    ))
+  ) {
+    return false;
   }
   log.info(`hub server listening on [::]:${LAN_PORT} (dual-stack)`);
-  app.once('before-quit', () => void server.close());
-  startBroadcaster({
-    hubId: hubId(),
+  hubApi = server.jukebox;
+  if (!hubHousehold(hubApi)) {
+    log.warn('server has no household identity yet (app.jukebox.household): beacons are paused');
+  }
+  const broadcaster = startBroadcaster({
+    identity: () => beaconIdentity(hubHousehold(hubApi)),
     bootId: randomUUID(),
-    roomName: ROOM_NAME,
     port: LAN_PORT,
     version: app.getVersion(),
-    protocolVersion: PROTOCOL_VERSION,
+    protocolVersion: M2_PROTOCOL_VERSION,
     log,
   });
   const mdns = startMdns({
@@ -911,19 +969,305 @@ async function startHub(root: string): Promise<boolean> {
     friendlyHost: () => server.jukebox.settings().friendlyHost,
     log,
   });
-  app.once('before-quit', () => mdns.stop());
+  stopRuntime = async () => {
+    broadcaster.stop();
+    mdns.stop();
+    hubApi = null;
+    await server.close();
+  };
   pageOrigin = `http://${opts.loopback}:${LAN_PORT}`;
   apiBase = `http://127.0.0.1:${LAN_PORT}`;
   return true;
 }
 
+/** Player: what the LAN listener's `/hub.json` and redirects use, read live. */
+const playerHubView: PlayerHubView = {
+  get address() {
+    return hubAddress() ?? '';
+  },
+  get epoch() {
+    return state.hubEpoch ?? 0;
+  },
+  get roomName() {
+    return state.roomName ?? '';
+  },
+  get verified() {
+    return hubVerified && Boolean(hubAddress());
+  },
+};
+
 async function startPlayer(root: string): Promise<boolean> {
-  const server = await startStaticServer(root);
-  log.info(`player loopback server on 127.0.0.1:${server.port}, hub ${opts.hub}`);
-  app.once('before-quit', () => void server.close());
-  pageOrigin = `http://${opts.loopback}:${server.port}`;
-  apiBase = opts.hub ?? '';
+  const loop = await startStaticServer(root);
+  log.info(`player loopback server on 127.0.0.1:${loop.port}, hub ${hubAddress() ?? '(none yet)'}`);
+  const lan: LanListener = await startPlayerLan({
+    hub: playerHubView,
+    build: async (m2) => {
+      const options: HubOptions & M2BuildAppOptions = {
+        ...m2,
+        dataDir: join(app.getPath('userData'), 'data'),
+        loggerInstance: fastifyLogger(),
+        disableRequestLogging: true,
+        secrets: { encrypt: codec.encrypt, decrypt: codec.decrypt },
+        lan: { addresses: () => lanAddresses(networkInterfaces()) },
+        nightlyBackup: false,
+        restartGraceMs: -1,
+      };
+      return buildApp(options);
+    },
+    warn: (m) => log.warn(m),
+  });
+  const listening = await listenOnLanPort(() => lan.listen(LAN_PORT, '::'), 'player listener');
+  if (listening) log.info(`player LAN listener (${lan.kind}) on [::]:${LAN_PORT}`);
+  stopRuntime = async () => {
+    await Promise.all([loop.close(), listening ? lan.close() : Promise.resolve()]);
+  };
+  pageOrigin = `http://${opts.loopback}:${loop.port}`;
+  apiBase = hubAddress() ?? '';
+  // Unpaired: the join wizard runs as a normal window, like hub setup.
+  setupMode = !paired();
   return true;
+}
+
+/** After pairing from the hub's first-run wizard: tear the hub down and come up as a player. */
+async function switchToPlayer(root: string): Promise<void> {
+  log.info('pairing complete: switching this laptop to player mode');
+  runMode = 'player';
+  hubVerified = false;
+  const stop = stopRuntime;
+  stopRuntime = null;
+  await stop?.().catch((err: unknown) => log.warn('stopping the hub runtime failed', err));
+  if (!(await startPlayer(root))) return;
+  const win = tvWindow;
+  if (!win || win.isDestroyed()) return;
+  mode = currentMode();
+  placeWindow(win);
+  void win.loadURL(tvUrl());
+}
+
+/** A newer protocol on the hub: install the update now (ignores mode and quiet rule). */
+function updateRequired(reason: string): void {
+  if (updateRequiredSince !== null && Date.now() - updateRequiredSince < 10 * 60_000) return;
+  updateRequiredSince = Date.now();
+  log.warn(`protocol mismatch (${reason}): installing the update now`);
+  if (!updater) {
+    log.warn('updater unavailable (not packaged); the page shows "Update required"');
+    return;
+  }
+  void updater.updateNow().then((r) => log.info(`update required: ${r.message}`));
+}
+
+function pushHubs(): void {
+  const win = tvWindow;
+  if (win && !win.isDestroyed()) win.webContents.send('jukebox:hubs', hubs.list());
+}
+
+const loggedEpochs = new Set<string>();
+
+function onBeacon(raw: unknown, from: string): void {
+  const verdict = hubs.accept(raw, from);
+  if (!verdict.ok) return;
+  const { entry } = verdict;
+  if (runMode === 'hub') {
+    const own = hubHousehold(hubApi);
+    if (own && entry.hubId !== own.hubId && entry.hubEpoch > own.hubEpoch) {
+      const k = `${entry.hubId}|${entry.hubEpoch}`;
+      if (!loggedEpochs.has(k)) {
+        loggedEpochs.add(k);
+        log.warn(
+          `heard a higher-epoch hub ${entry.hubId} (${entry.roomName}) epoch ${entry.hubEpoch} > ${own.hubEpoch} at ${entry.address}:${entry.port}; demotion is not in this build`,
+        );
+      }
+    }
+    return;
+  }
+  if (
+    entry.verified &&
+    entry.hubId === state.hubId &&
+    entry.protocolVersion > M2_PROTOCOL_VERSION
+  ) {
+    updateRequired(`hub beacon protocol ${entry.protocolVersion}`);
+  }
+  pushHubs();
+}
+
+function str(v: unknown): string | undefined {
+  return typeof v === 'string' && v ? v : undefined;
+}
+
+function registerM2Ipc(root: string): void {
+  ipcMain.handle('jukebox:mode', (e) => (fromPage(e) ? runMode : undefined));
+  ipcMain.handle('jukebox:hubs', (e) => (fromPage(e) ? hubs.list() : undefined));
+  ipcMain.handle('jukebox:linkState', (e) =>
+    fromPage(e) ? (state.linkState ?? 'linked') : undefined,
+  );
+
+  ipcMain.handle('jukebox:pair', async (e, input: unknown) => {
+    if (!fromPage(e)) return { ok: false, message: 'denied' };
+    // First run (hub wizard) or a player re-pairing; never turns a set-up hub into a player.
+    if (runMode === 'hub' && !setupMode) {
+      return { ok: false, message: 'This laptop is already the hub.' };
+    }
+    const r = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+    const password = typeof r.password === 'string' ? r.password : '';
+    const address = str(r.hubAddress) ?? hubAddress() ?? '';
+    if (!password) return { ok: false, message: 'Enter the owner password.' };
+    const outcome = await pairWithHub({
+      hubAddress: address,
+      password,
+      deviceName: str(r.deviceName) ?? DEVICE_NAME,
+      deviceId: deviceId(),
+      fetch: (url, init) => fetch(url, init),
+    });
+    if (!outcome.ok) {
+      log.warn(`pairing with ${address} failed: ${outcome.code}`);
+      return { ok: false, code: outcome.code, message: outcome.message };
+    }
+    const { reply } = outcome;
+    persist({
+      mode: 'player',
+      hubAddress: outcome.hubAddress,
+      hubId: reply.hubId,
+      hubEpoch: reply.hubEpoch,
+      roomName: reply.roomName,
+      deviceToken: sealSecret(codec, reply.deviceToken),
+      householdKey: sealSecret(codec, reply.householdKey),
+      keyEpoch: 0,
+    });
+    log.info(`paired with hub ${reply.hubId} (${reply.roomName}) at ${outcome.hubAddress}`);
+    if (reply.protocolVersion > M2_PROTOCOL_VERSION) {
+      updateRequired(`pair reply protocol ${reply.protocolVersion}`);
+    }
+    // Answer the page first, then move the window.
+    setTimeout(() => {
+      if (runMode === 'hub') void switchToPlayer(root);
+      else {
+        apiBase = outcome.hubAddress;
+        hubVerified = false;
+        setupMode = false;
+        const win = tvWindow;
+        if (win && !win.isDestroyed()) {
+          mode = currentMode();
+          placeWindow(win);
+          void win.loadURL(tvUrl());
+        }
+      }
+    }, 300);
+    return {
+      ok: true,
+      roomName: reply.roomName,
+      hubAddress: outcome.hubAddress,
+      protocolMismatch: outcome.protocolMismatch,
+    };
+  });
+
+  ipcMain.handle('jukebox:playerAuth', (e, nonceP: unknown) => {
+    const key = householdKey();
+    const hub = hubAddress();
+    if (!fromPage(e) || runMode !== 'player' || !str(nonceP) || !key || !hub || !state.hubId) {
+      return null;
+    }
+    const id = deviceId();
+    return {
+      deviceId: id,
+      proof: playerAuthProof({
+        householdKey: key,
+        deviceId: id,
+        hubId: state.hubId,
+        hubAddress: hub,
+        nonceP: nonceP as string,
+      }),
+    };
+  });
+
+  ipcMain.handle('jukebox:verifyAuthOk', (e, nonceP: unknown, nonceH: unknown, proof: unknown) => {
+    const key = householdKey();
+    if (!fromPage(e) || runMode !== 'player' || !key || !state.hubId) return false;
+    if (!str(nonceP) || !str(nonceH) || !str(proof)) return false;
+    const ok = verifyAuthOk({
+      householdKey: key,
+      deviceId: deviceId(),
+      hubId: state.hubId,
+      nonceP: nonceP as string,
+      nonceH: nonceH as string,
+      proof: proof as string,
+    });
+    hubVerified = ok;
+    if (!ok) log.warn('hub authOk proof did not verify');
+    return ok;
+  });
+
+  ipcMain.handle('jukebox:setLinkState', (e, value: unknown) => {
+    const parsed = LinkStateSchema.safeParse(value);
+    if (!fromPage(e) || !parsed.success) return false;
+    persist({ linkState: parsed.data });
+    return true;
+  });
+
+  ipcMain.handle('jukebox:setHubAddress', (e, value: unknown) => {
+    if (!fromPage(e)) return { ok: false, message: 'denied' };
+    if (runMode === 'hub' && !setupMode) return { ok: false, message: 'This laptop is the hub.' };
+    let address: string;
+    try {
+      address = normalizeHubAddress(typeof value === 'string' ? value : '');
+    } catch (err) {
+      return { ok: false, message: (err as Error).message };
+    }
+    persist({ hubAddress: address });
+    if (opts.hub) log.warn(`--hub=${opts.hub} overrides the saved hub address for this run`);
+    if (runMode === 'player') apiBase = hubAddress() ?? '';
+    hubVerified = false;
+    log.info(`hub address set to ${address}`);
+    return { ok: true, hubAddress: address };
+  });
+
+  ipcMain.handle('jukebox:storeKey', (e, input: unknown) => {
+    if (!fromPage(e) || runMode !== 'player') return false;
+    const r = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>;
+    const key = HouseholdKeySchema.safeParse(r.householdKey);
+    const epoch = KeyEpochSchema.safeParse(r.keyEpoch);
+    if (!key.success || !epoch.success) return false;
+    if (epoch.data < (state.keyEpoch ?? 0)) {
+      log.warn(`ignoring rekey to epoch ${epoch.data} (have ${state.keyEpoch ?? 0})`);
+      return false;
+    }
+    persist({ householdKey: sealSecret(codec, key.data), keyEpoch: epoch.data });
+    log.info(`household key rotated to epoch ${epoch.data}`);
+    return true;
+  });
+
+  ipcMain.handle('jukebox:storeReplica', (e, snapshot: unknown) => {
+    if (!fromPage(e) || runMode !== 'player') return null;
+    try {
+      return writeReplica(REPLICA_FILE, codec, snapshot);
+    } catch (err) {
+      log.warn('storing the replica failed', err instanceof Error ? err.message : err);
+      return null;
+    }
+  });
+  ipcMain.handle('jukebox:replicaInfo', (e) =>
+    fromPage(e) ? replicaInfo(REPLICA_FILE) : undefined,
+  );
+
+  ipcMain.handle('jukebox:localPlayerAuth', (e, nonceP: unknown) => {
+    if (!fromPage(e) || runMode !== 'hub' || !str(nonceP) || !state.playerId) return null;
+    const h = hubHousehold(hubApi);
+    if (!h) return null;
+    return {
+      deviceId: state.playerId,
+      proof: joinProof(h.householdKey, {
+        deviceId: state.playerId,
+        hubId: h.hubId,
+        nonceP: nonceP as string,
+        hub: hubEndpoint(pageOrigin),
+      }),
+    };
+  });
+
+  ipcMain.handle('jukebox:updateRequired', (e) => {
+    if (!fromPage(e)) return false;
+    updateRequired('reported by the page');
+    return true;
+  });
 }
 
 function registerIpc(): void {
@@ -957,7 +1301,7 @@ function registerIpc(): void {
   });
   ipcMain.handle('jukebox:releaseNotes', (e) => (fromPage(e) ? releaseNotes : undefined));
   ipcMain.handle('jukebox:setupComplete', async (e, reply: unknown) => {
-    if (!fromPage(e) || opts.mode !== 'hub') return false;
+    if (!fromPage(e) || runMode !== 'hub') return false;
     if (await needsSetup()) return false;
     const r = (reply && typeof reply === 'object' ? reply : {}) as Record<string, unknown>;
     const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
@@ -1018,20 +1362,25 @@ function announceUpdate(win: BrowserWindow): void {
 async function main(): Promise<void> {
   await app.whenReady();
   log.info(
-    `Room Jukebox ${app.getVersion()} starting: mode=${opts.mode} port=${LAN_PORT} electron=${process.versions.electron} node=${process.versions.node} chrome=${process.versions.chrome}`,
+    `Room Jukebox ${app.getVersion()} starting: mode=${runMode} (saved ${state.mode}) port=${LAN_PORT} electron=${process.versions.electron} node=${process.versions.node} chrome=${process.versions.chrome}`,
     opts,
   );
   codec = secretsCodec();
+  deviceId();
   registerIpc();
 
   const root = webRoot();
   log.info(`web root ${root}`);
+  registerM2Ipc(root);
 
-  const listener = startListener({ log });
+  const listener = startListener({ log, onBeacon });
+  setInterval(() => {
+    if (hubs.sweep() && runMode === 'player') pushHubs();
+  }, HUBS_SWEEP_MS);
   ipcMain.handle('jukebox:lastBeacon', (e) => (fromPage(e) ? listener.last() : undefined));
 
   selfCheck = runSelfCheck({
-    mode: opts.mode,
+    mode: runMode,
     appVersion: app.getVersion(),
     displays: displaySummary(),
   }).then((result) => {
@@ -1059,10 +1408,11 @@ async function main(): Promise<void> {
   }
 
   createTray();
-  const started = opts.mode === 'hub' ? await startHub(root) : await startPlayer(root);
+  app.once('before-quit', () => void stopRuntime?.());
+  const started = runMode === 'hub' ? await startHub(root) : await startPlayer(root);
   if (!started) return;
 
-  setupMode = await needsSetup();
+  if (runMode === 'hub') setupMode = await needsSetup();
   tvWindow = createTvWindow(tvUrl());
   announceUpdate(tvWindow);
   void applyServerSettings();
@@ -1098,10 +1448,8 @@ async function main(): Promise<void> {
   }, 5000);
   setInterval(sweepOwnerToken, 15_000);
 
-  if (opts.mode === 'hub') {
-    void pollActivity();
-    setInterval(() => void pollActivity(), ACTIVITY_POLL_MS);
-  }
+  void pollActivity();
+  setInterval(() => void pollActivity(), ACTIVITY_POLL_MS);
   if (updater) {
     const u = updater;
     void u.tick();

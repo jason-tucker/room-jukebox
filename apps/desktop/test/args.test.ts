@@ -2,9 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { parseArgs } from '../src/args';
 
 describe('parseArgs', () => {
-  it('defaults to fullscreen hub mode', () => {
+  it('defaults to the saved mode (undefined) in fullscreen', () => {
     expect(parseArgs(['.', '--some-chromium-flag'])).toEqual({
-      mode: 'hub',
+      mode: undefined,
       hub: undefined,
       display: undefined,
       kiosk: false,
@@ -34,8 +34,11 @@ describe('parseArgs', () => {
     });
   });
 
-  it('rejects player mode without a hub and unknown modes', () => {
-    expect(() => parseArgs(['--mode=player'])).toThrow(/--hub/);
+  it('accepts player mode without a hub (saved hub address); rejects bad hubs and modes', () => {
+    expect(parseArgs(['--mode=player']).mode).toBe('player');
+    expect(parseArgs(['--mode=hub']).mode).toBe('hub');
+    expect(() => parseArgs(['--hub=192.168.1.20:8080'])).toThrow(/--hub/);
+    expect(() => parseArgs(['--hub=http://192.168.1.20:8080/x'])).toThrow(/--hub/);
     expect(() => parseArgs(['--mode=tv'])).toThrow(/--mode/);
   });
 });
