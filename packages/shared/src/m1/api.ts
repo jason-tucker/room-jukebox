@@ -186,3 +186,46 @@ export type LogsTailReply = z.infer<typeof LogsTailReplySchema>;
 export const PlayersReplySchema = z.object({ players: z.array(PlayerInfoSchema) });
 export type PlayersReply = z.infer<typeof PlayersReplySchema>;
 export const PlaylistReplySchema = PlaylistInfoSchema;
+
+/** Bundled per-version notes (generated from docs/RELEASES.md at build time). */
+export const ReleaseNotesSchema = z.object({
+  version: z.string().min(1),
+  date: z.string().min(1),
+  changes: z.array(z.string()),
+  checklist: z.array(z.object({ id: z.string().min(1), text: z.string().min(1) })),
+});
+export type ReleaseNotes = z.infer<typeof ReleaseNotesSchema>;
+
+/** Owner's verification state for the installed version's checklist. */
+export const ChecklistStateSchema = z.object({
+  version: z.string().min(1),
+  done: z.record(z.string(), z.boolean()),
+  updatedAt: z.number().int().nonnegative().nullable(),
+});
+export type ChecklistState = z.infer<typeof ChecklistStateSchema>;
+
+export const ChecklistPatchSchema = z.object({
+  version: z.string().min(1),
+  done: z.record(z.string(), z.boolean()),
+});
+export type ChecklistPatch = z.infer<typeof ChecklistPatchSchema>;
+
+export const ReleaseNotesReplySchema = z.object({
+  notes: ReleaseNotesSchema.nullable(),
+  checklist: ChecklistStateSchema.nullable(),
+  installedVersion: z.string().min(1),
+});
+export type ReleaseNotesReply = z.infer<typeof ReleaseNotesReplySchema>;
+
+/** Update status the desktop reports to the admin page (M1.5). */
+export const UpdateStatusSchema = z.object({
+  mode: z.enum(['immediate', 'quiet', 'off']),
+  feed: z.enum(['tango', 'github']),
+  feedUrl: z.string(),
+  state: z.enum(['idle', 'checking', 'available', 'downloading', 'downloaded', 'installing', 'error', 'up-to-date']),
+  current: z.string(),
+  available: z.string().nullable(),
+  message: z.string().nullable(),
+  lastCheckAt: z.number().int().nonnegative().nullable(),
+});
+export type UpdateStatus = z.infer<typeof UpdateStatusSchema>;
