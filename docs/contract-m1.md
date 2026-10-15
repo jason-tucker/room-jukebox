@@ -88,3 +88,22 @@ The desktop passes to `buildApp`: `webRoot`, `dataDir`, `loggerInstance`, `disab
 ## Out of scope for M1 (M2/M3)
 
 Remote players and device-token pairing beyond the local TV window, groups/linking, replication, Become hub, beacon signing, public listener and party code, Cast, search-cache rehydration and the 30-day sweep, laptop `/settings` window (the desktop may ship a password-gated window that simply loads `/admin` with the bearer token), restore UI, diagnostics zip.
+
+## M1.5 updater and release notes
+
+Added 2026-10-14. Shapes are the zod schemas in `packages/shared/src/m1/api.ts`. Every `/api/admin/*` route below applies the household source gate and needs an admin session (bearer or `rj_admin` cookie), like the rest of the admin API.
+
+**Release notes and test checklist**
+- `GET /api/admin/release-notes` → **ReleaseNotesReply** `{ notes: ReleaseNotes|null, checklist: ChecklistState|null, installedVersion }`. `notes` are the bundled notes the desktop passes to `buildApp` (`null` on a standalone server). The server always sends a `checklist`: the stored one when its `version` equals `installedVersion`, otherwise an empty `{ version: installedVersion, done: {}, updatedAt: null }` (ticks from an earlier version are not carried over).
+- `PATCH /api/admin/checklist` **ChecklistPatch** `{ version, done: { [itemId]: boolean } }` → **ChecklistState**. Merges `done` into the stored ticks and sets `updatedAt` (server time). `409 version-mismatch` when `version` is not the installed version. Stored in the `settings` row's JSON as `checklist: { version, done, updatedAt }`.
+
+**Updater** (the desktop's auto-updater; a standalone server has none)
+- `GET /api/admin/update-status` → **UpdateStatus** `{ mode: 'immediate'|'quiet'|'off', feed: 'tango'|'github', feedUrl, state: 'idle'|'checking'|'available'|'downloading'|'downloaded'|'installing'|'error'|'up-to-date', current, available: string|null, message: string|null, lastCheckAt: number|null }`. Without an updater: `{ mode: 'off', feed: 'tango', feedUrl: '', state: 'idle', current: <server version>, available: null, message: 'Updater not available (standalone server)', lastCheckAt: null }`.
+- `POST /api/admin/update/check` `{}`, `POST /api/admin/update/install` `{}`, `POST /api/admin/update/mode` `{ mode }`, `POST /api/admin/update/feed` `{ feed, url?: string (URL) }` → the updater's **UpdateStatus** after the action. `503 updater-unavailable` without an updater; `502 update-failed` (the updater's error message) when the action throws. Each action is recorded in `events` as `admin.update`.
+
+**Public**
+- `GET /api/version` → `{ version, protocolVersion }` (no gate; the TV footer shows it).
+
+**TV notices**: `/tv` shows WS `toast` messages of level `info` (and `info` toasts from the desktop bridge's `onToast`) bottom-right in the side column for `ttlMs`; the desktop uses this for "Updating in 15 s" and "Updated to x.y.z". The guest page shows nothing about updates.
+
+**Desktop → `buildApp` options**: `releaseNotes?: ReleaseNotes` and `updater?: { status(): UpdateStatus, checkNow(): Promise<void>, installNow(): Promise<void>, setMode(mode): void, setFeed(feed, url?): void }` (exported as `UpdaterApi`). Both optional.

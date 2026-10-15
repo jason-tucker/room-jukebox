@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type * as YouTubeModule from '../lib/youtube.ts';
 import type { PlayerHandlers, YTPlayer } from '../lib/youtube.ts';
@@ -114,5 +114,54 @@ describe('/tv Start Music', () => {
       'Fallback music stopped after 5 failures',
     );
     expect(screen.getByTestId('start-music')).toBeInTheDocument();
+  });
+});
+
+describe('/tv notices and version', () => {
+  beforeEach(() => {
+    FakeWebSocket.reset();
+    vi.stubGlobal('WebSocket', FakeWebSocket);
+    window.history.replaceState(null, '', '/tv?player=tv1&token=t0k');
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete window.jukebox;
+  });
+
+  it('shows info toasts bottom-right, outside the player, and the hub version', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((url: string) =>
+        Promise.resolve(
+          url === '/api/version'
+            ? new Response(JSON.stringify({ version: '0.0.8', protocolVersion: 1 }))
+            : new Response('{}', { status: 404 }),
+        ),
+      ),
+    );
+    let desktopToast: ((t: string) => void) | null = null;
+    window.jukebox = {
+      onToast: (cb) => {
+        desktopToast = cb;
+        return () => undefined;
+      },
+    };
+    render(<Tv />);
+    expect(await screen.findByTestId('tv-version')).toHaveTextContent(S.tv.version('0.0.8'));
+    await waitFor(() => expect(FakeWebSocket.instances.length).toBe(1));
+    const ws = FakeWebSocket.last();
+    act(() => {
+      ws.open();
+      ws.receive({ type: 'state', state: playerState() });
+      ws.receive({ type: 'toast', level: 'info', message: 'Updated to 0.0.8', ttlMs: 8000 });
+      ws.receive({ type: 'toast', level: 'warn', message: 'Not for the TV', ttlMs: 8000 });
+    });
+    const toasts = screen.getByTestId('tv-toasts');
+    expect(await within(toasts).findByText('Updated to 0.0.8')).toBeInTheDocument();
+    expect(screen.queryByText('Not for the TV')).toBeNull();
+    expect(screen.getByTestId('tv-player')).not.toContainElement(toasts);
+
+    act(() => desktopToast?.('Updating in 15 s'));
+    expect(await within(toasts).findByText('Updating in 15 s')).toBeInTheDocument();
   });
 });

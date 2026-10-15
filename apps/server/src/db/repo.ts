@@ -10,7 +10,7 @@ import type {
   SkipReason,
 } from '@room-jukebox/core';
 import { emptySearchUsage } from '@room-jukebox/core';
-import type { SearchProvider, SearchSource, VideoCard } from '@room-jukebox/shared';
+import type { ChecklistState, SearchProvider, SearchSource, VideoCard } from '@room-jukebox/shared';
 import type { SQLOutputValue } from 'node:sqlite';
 import type { Db } from './index.ts';
 import { transaction } from './index.ts';
@@ -56,6 +56,8 @@ export interface SettingsData {
    * `source` when the settings service starts).
    */
   search?: { source?: SearchSource; unofficialFallback?: boolean };
+  /** Owner's release checklist ticks (M1.5); absent until the first tick. */
+  checklist?: ChecklistState;
 }
 
 export interface SettingsRow {

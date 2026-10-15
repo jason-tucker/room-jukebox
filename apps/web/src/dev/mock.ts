@@ -10,10 +10,13 @@
  * suggestions answer any prefix of 2+ characters. Search "quota" to switch the API sources to the
  * unofficial provider (as when the API quota runs out), "budget" for the per-guest budget error,
  * "down" for YouTube not answering, "off" to turn guest search off (reload to undo), "low" to
- * flip the low banner, "zero" to exhaust guest search.
+ * flip the low banner, "zero" to exhaust guest search. Admin → What's new: each "Check now" runs
+ * the next update scenario (found and downloaded → up to date → error); "Install now" installs it
+ * and sends the TV an "Updated to" notice.
  */
 import type {
   AdminState,
+  ChecklistState,
   EntryAdmin,
   GuestState,
   M1NowPlaying,
@@ -25,6 +28,7 @@ import type {
   SearchSource,
   ServerMessage,
   SettingsPublic,
+  UpdateStatus,
   VideoCard,
 } from '@room-jukebox/shared';
 
@@ -91,7 +95,59 @@ const err = (status: number, code: string, message: string, retryAfterSec?: numb
     error: { code, message, ...(retryAfterSec !== undefined ? { retryAfterSec } : {}) },
   });
 
+const MOCK_VERSION = '0.0.8';
+const RELEASE_NOTES = {
+  version: MOCK_VERSION,
+  date: '2026-10-14',
+  changes: [
+    'Auto-updater: checks the feed, downloads and installs in place.',
+    'What’s new tab in admin with a test checklist that remembers what you verified.',
+    'TV shows a short "Updated to x.y.z" notice after an update.',
+  ],
+  checklist: [
+    { id: 'tv-notice', text: 'The TV showed "Updated to 0.0.8" after the update installed.' },
+    { id: 'ticks-persist', text: 'Ticking an item here survives a page reload.' },
+    { id: 'update-mode', text: 'The Updates card shows mode "Immediate (testing)".' },
+    { id: 'search', text: 'Search: type two letters and suggestions appear.' },
+    { id: 'queue', text: 'Tap a result, confirm, and the song queues.' },
+  ],
+};
+
+/** Update scenarios that successive "Check now" presses walk through. */
+const UPDATE_SCENARIOS: Array<Array<Partial<UpdateStatus>>> = [
+  [
+    { state: 'available', available: '0.0.9' },
+    { state: 'downloading', available: '0.0.9' },
+    { state: 'downloaded', available: '0.0.9' },
+  ],
+  [{ state: 'up-to-date', available: null }],
+  [{ state: 'error', available: null, message: 'Could not reach the update feed (mock).' }],
+];
+
+function loadChecklist(): ChecklistState {
+  try {
+    const raw = sessionStorage.getItem('rjmock.checklist');
+    if (raw) return JSON.parse(raw) as ChecklistState;
+  } catch {
+    // Fall through to an empty checklist.
+  }
+  return { version: MOCK_VERSION, done: {}, updatedAt: null };
+}
+
 class MockHub {
+  checklist = loadChecklist();
+  update: UpdateStatus = {
+    mode: 'immediate',
+    feed: 'tango',
+    feedUrl: 'https://tango.example/room-jukebox/',
+    state: 'idle',
+    current: MOCK_VERSION,
+    available: null,
+    message: null,
+    lastCheckAt: null,
+  };
+  updateScenario = 0;
+  updateTimers: ReturnType<typeof setTimeout>[] = [];
   revision = 1;
   changeSeq = 1;
   playbackState: 'playing' | 'paused' | 'idle' | 'blocked' = 'playing';
@@ -344,6 +400,35 @@ class MockHub {
   broadcast() {
     this.changeSeq += 1;
     for (const s of this.sockets) s.sendState();
+  }
+
+  toastPlayers(message: string) {
+    for (const s of this.sockets)
+      if (s.role === 'player') s.deliver({ type: 'toast', level: 'info', message, ttlMs: 8000 });
+  }
+
+  checkForUpdate() {
+    for (const t of this.updateTimers) clearTimeout(t);
+    this.updateTimers = [];
+    const steps = UPDATE_SCENARIOS[this.updateScenario % UPDATE_SCENARIOS.length]!;
+    this.updateScenario++;
+    this.update = { ...this.update, state: 'checking', message: null, lastCheckAt: Date.now() };
+    steps.forEach((step, i) => {
+      this.updateTimers.push(
+        setTimeout(() => (this.update = { ...this.update, ...step }), 2000 * (i + 1)),
+      );
+    });
+  }
+
+  installUpdate() {
+    const next = this.update.available;
+    if (next === null) return;
+    this.update = { ...this.update, state: 'installing' };
+    this.toastPlayers('Updating in 15 s');
+    setTimeout(() => {
+      this.update = { ...this.update, state: 'idle', current: next, available: null };
+      this.toastPlayers(`Updated to ${next}`);
+    }, 3000);
   }
 
   toastGuests(message: string, level: 'info' | 'warn' | 'error' = 'info') {
@@ -686,6 +771,48 @@ class MockHub {
         this.lan.chosen = String(b.chosen);
         this.broadcast();
         return json(200, { ok: true });
+      case 'GET /api/version':
+        return json(200, { version: this.update.current, protocolVersion: 1 });
+      case 'GET /api/admin/release-notes':
+        return json(200, {
+          notes: RELEASE_NOTES,
+          checklist: this.checklist.version === MOCK_VERSION ? this.checklist : null,
+          installedVersion: MOCK_VERSION,
+        });
+      case 'PATCH /api/admin/checklist': {
+        if (b.version !== MOCK_VERSION) {
+          return err(409, 'version-mismatch', 'That checklist is for another version.');
+        }
+        this.checklist = {
+          version: MOCK_VERSION,
+          done: { ...this.checklist.done, ...(b.done as Record<string, boolean>) },
+          updatedAt: Date.now(),
+        };
+        sessionStorage.setItem('rjmock.checklist', JSON.stringify(this.checklist));
+        return json(200, this.checklist);
+      }
+      case 'GET /api/admin/update-status':
+        return json(200, this.update);
+      case 'POST /api/admin/update/check':
+        this.checkForUpdate();
+        return json(200, this.update);
+      case 'POST /api/admin/update/install':
+        this.installUpdate();
+        return json(200, this.update);
+      case 'POST /api/admin/update/mode':
+        this.update = { ...this.update, mode: b.mode as UpdateStatus['mode'] };
+        return json(200, this.update);
+      case 'POST /api/admin/update/feed': {
+        const feed = b.feed as UpdateStatus['feed'];
+        const feedUrl =
+          typeof b.url === 'string'
+            ? b.url
+            : feed === 'github'
+              ? 'https://github.com/jason-tucker/room-jukebox/releases/latest/download/'
+              : 'https://tango.example/room-jukebox/';
+        this.update = { ...this.update, feed, feedUrl };
+        return json(200, this.update);
+      }
       case 'GET /api/admin/logs/tail':
         return json(200, { lines: ['[mock] no server log'] });
       case 'GET /api/setup/status':

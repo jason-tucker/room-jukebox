@@ -1,6 +1,8 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { DEFAULT_COUNTRY, DEFAULT_LIMITS, INITIAL_HUB_EPOCH } from '@room-jukebox/core';
 import type {
+  ChecklistPatch,
+  ChecklistState,
   PlaylistInfo,
   SearchSource,
   SettingsPatch,
@@ -147,6 +149,25 @@ export class SettingsService {
       password === null || password === '' ? null : this.#secrets.encrypt(password),
       this.#now(),
     );
+  }
+
+  /** The stored checklist when it belongs to `version`, else an empty one for `version`. */
+  checklist(version: string): ChecklistState {
+    const c = this.data().checklist;
+    if (c && c.version === version) return { version, done: { ...c.done }, updatedAt: c.updatedAt };
+    return { version, done: {}, updatedAt: null };
+  }
+
+  /** Merges `patch.done` into `patch.version`'s checklist (a new version starts empty). */
+  patchChecklist(patch: ChecklistPatch): ChecklistState {
+    const prev = this.checklist(patch.version);
+    const next: ChecklistState = {
+      version: patch.version,
+      done: { ...prev.done, ...patch.done },
+      updatedAt: this.#now(),
+    };
+    this.setData({ ...this.data(), checklist: next });
+    return structuredClone(next);
   }
 
   toPublic(): SettingsPublicExt {

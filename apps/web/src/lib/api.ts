@@ -2,6 +2,7 @@ import {
   AdminStateSchema,
   ApiErrorSchema,
   BackupReplySchema,
+  ChecklistStateSchema,
   GuestStateSchema,
   HelloReplySchema,
   LanReplySchema,
@@ -10,6 +11,7 @@ import {
   PlayersReplySchema,
   PlaylistInfoSchema,
   PrivacyReplySchema,
+  ReleaseNotesReplySchema,
   RequestReplySchema,
   ResolveReplySchema,
   SearchesReplySchema,
@@ -19,6 +21,8 @@ import {
   SetupStatusReplySchema,
   SuggestReplySchema,
   HealthReplySchema,
+  UpdateStatusSchema,
+  type ChecklistPatch,
   type HelloBody,
   type PasswordChangeBody,
   type RequestBody,
@@ -26,6 +30,7 @@ import {
   type SetupBody,
   type TransportBody,
   type ReorderBody,
+  type UpdateStatus,
 } from '@room-jukebox/shared';
 import { z } from 'zod';
 import { desktopAdminToken } from './jukebox.ts';
@@ -137,6 +142,7 @@ export async function call<T = unknown>(
 }
 
 const OkSchema = z.object({ ok: z.literal(true) });
+const VersionReplySchema = z.object({ version: z.string(), protocolVersion: z.number().int() });
 const BackupsReplySchema = z.object({ backups: z.array(BackupReplySchema) });
 
 const enc = encodeURIComponent;
@@ -144,6 +150,7 @@ const enc = encodeURIComponent;
 /** One function per contract route. */
 export const api = {
   health: () => call('GET', '/healthz', { schema: HealthReplySchema }),
+  version: () => call('GET', '/api/version', { schema: VersionReplySchema }),
 
   guest: {
     hello: (body: HelloBody) =>
@@ -209,6 +216,22 @@ export const api = {
       }),
     logsTail: (lines = 500) =>
       call('GET', `/api/admin/logs/tail?lines=${lines}`, { schema: LogsTailReplySchema }),
+    releaseNotes: () =>
+      call('GET', '/api/admin/release-notes', { schema: ReleaseNotesReplySchema }),
+    patchChecklist: (body: ChecklistPatch) =>
+      call('PATCH', '/api/admin/checklist', { body, schema: ChecklistStateSchema }),
+    updateStatus: () => call('GET', '/api/admin/update-status', { schema: UpdateStatusSchema }),
+    updateCheck: () =>
+      call('POST', '/api/admin/update/check', { body: {}, schema: UpdateStatusSchema }),
+    updateInstall: () =>
+      call('POST', '/api/admin/update/install', { body: {}, schema: UpdateStatusSchema }),
+    updateMode: (mode: UpdateStatus['mode']) =>
+      call('POST', '/api/admin/update/mode', { body: { mode }, schema: UpdateStatusSchema }),
+    updateFeed: (feed: UpdateStatus['feed'], url?: string) =>
+      call('POST', '/api/admin/update/feed', {
+        body: url === undefined ? { feed } : { feed, url },
+        schema: UpdateStatusSchema,
+      }),
   },
 
   setup: {

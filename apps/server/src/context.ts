@@ -17,7 +17,7 @@ import type { Session } from './session/session.ts';
 import type { SettingsService } from './settings.ts';
 import type { YouTubeService } from './youtube/service.ts';
 import type { SuggestService } from './youtube/suggest.ts';
-import type { SettingsPublic } from '@room-jukebox/shared';
+import type { ReleaseNotes, SettingsPublic, UpdateStatus } from '@room-jukebox/shared';
 
 export interface SetupCompleteInfo {
   /** Long-lived desktop admin token (same as the SetupReply's `token`). */
@@ -30,6 +30,18 @@ export interface SetupCompleteInfo {
 export interface AppHooks {
   onSetupComplete?: (info: SetupCompleteInfo) => void | Promise<void>;
   onSettingsChanged?: (settings: SettingsPublic) => void | Promise<void>;
+}
+
+export type UpdateMode = UpdateStatus['mode'];
+export type UpdateFeed = UpdateStatus['feed'];
+
+/** The desktop's auto-updater, driven from the admin page (M1.5). Absent on a standalone server. */
+export interface UpdaterApi {
+  status(): UpdateStatus;
+  checkNow(): Promise<void>;
+  installNow(): Promise<void>;
+  setMode(mode: UpdateMode): void;
+  setFeed(feed: UpdateFeed, url?: string): void;
 }
 
 /** Shared services for route plugins. */
@@ -45,6 +57,9 @@ export interface AppContext {
   now: () => number;
   backupDir: string;
   logFile: string | undefined;
+  /** The installed version's bundled notes (desktop); null on a standalone server. */
+  releaseNotes: ReleaseNotes | null;
+  updater: UpdaterApi | null;
   /** Sends a toast to every socket of `guestId`. */
   toastGuest: (guestId: string, level: 'info' | 'warn' | 'error', message: string) => void;
 }

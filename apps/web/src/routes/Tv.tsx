@@ -1,6 +1,9 @@
 import type { PlayerState } from '@room-jukebox/shared';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useToasts } from '../components/Toasts.tsx';
 import { YouTubeAttribution } from '../components/YouTubeAttribution.tsx';
+import { onDesktopToast } from '../lib/jukebox.ts';
+import { api } from '../lib/api.ts';
 import { QrCode } from '../lib/qr.tsx';
 import {
   DEFAULT_TUNING,
@@ -127,6 +130,33 @@ export function Tv() {
     };
   }, [client, tuning]);
 
+  // Info notices ("Updated to x.y.z", "Updating in 15 s") from the hub socket or the desktop shell.
+  const { toasts, push } = useToasts();
+  useEffect(() => {
+    if (!client) return;
+    return client.onToast((t) => {
+      if (t.level === 'info') push(t.message, 'info', t.ttlMs);
+    });
+  }, [client, push]);
+  useEffect(
+    () =>
+      onDesktopToast((message, level, ttlMs) => {
+        if (level === 'info') push(message, 'info', ttlMs);
+      }),
+    [push],
+  );
+
+  const [version, setVersion] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void api.version().then((r) => {
+      if (live && r.ok) setVersion(r.data.version);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
   const pill = pillFor(status, state, tv);
   const np = state?.playback.nowPlaying ?? null;
   const requestUrl = state ? (state.qr.publicUrl ?? state.qr.lanUrl) : null;
@@ -239,6 +269,32 @@ export function Tv() {
         {state?.partyCode && (
           <div className="absolute right-2 bottom-1 text-base text-neutral-500">
             {S.tv.partyCode(state.partyCode)}
+          </div>
+        )}
+
+        {/* Bottom-right of the right column, above the party code; never over the player. */}
+        <div
+          aria-live="polite"
+          data-testid="tv-toasts"
+          className="absolute right-2 bottom-8 z-20 flex max-w-full flex-col items-end gap-1 pl-2"
+        >
+          {toasts.map((t) => (
+            <div
+              key={t.id}
+              role="status"
+              className="rounded-lg bg-neutral-800 px-3 py-1.5 text-lg text-neutral-100 shadow"
+            >
+              {t.message}
+            </div>
+          ))}
+        </div>
+
+        {version && (
+          <div
+            data-testid="tv-version"
+            className="absolute bottom-1 left-2 text-base text-neutral-500"
+          >
+            {S.tv.version(version)}
           </div>
         )}
 

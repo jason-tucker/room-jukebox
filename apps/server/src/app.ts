@@ -5,13 +5,13 @@ import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
-import type { HealthReply, LanReply, SettingsPublic } from '@room-jukebox/shared';
+import type { HealthReply, LanReply, ReleaseNotes, SettingsPublic } from '@room-jukebox/shared';
 import { M1_PROTOCOL_VERSION } from '@room-jukebox/shared';
 import Fastify from 'fastify';
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import pkg from '../package.json' with { type: 'json' };
 import { AdminAuth } from './auth/admin.ts';
-import type { AppContext, AppHooks } from './context.ts';
+import type { AppContext, AppHooks, UpdaterApi } from './context.ts';
 import { backup, BackupScheduler } from './db/backup.ts';
 import type { BackupInfo } from './db/backup.ts';
 import { closeDb, openDb } from './db/index.ts';
@@ -22,6 +22,7 @@ import { lanReply, osLan } from './lan.ts';
 import { registerAdminRoutes } from './routes/admin.ts';
 import { registerGuestRoutes } from './routes/guest.ts';
 import { issueLocalPlayerToken, registerSetupRoutes } from './routes/setup.ts';
+import { registerUpdateRoutes } from './routes/updates.ts';
 import { registerWs, WsHub } from './routes/ws.ts';
 import { Session } from './session/session.ts';
 import type { Secrets } from './settings.ts';
@@ -36,7 +37,7 @@ import { searchUnofficial } from './youtube/unofficial.ts';
 
 export const VERSION: string = pkg.version;
 
-export type { AppHooks, SetupCompleteInfo } from './context.ts';
+export type { AppHooks, SetupCompleteInfo, UpdateFeed, UpdateMode, UpdaterApi } from './context.ts';
 export type { LanAddress, LanProvider } from './lan.ts';
 export type { Secrets } from './settings.ts';
 export type { FetchLike } from './youtube/client.ts';
@@ -64,6 +65,10 @@ export interface BuildAppOptions {
   hooks?: AppHooks;
   /** Server log file, for `GET /api/admin/logs/tail`. Without it the tail is empty. */
   logFile?: string;
+  /** The installed version's bundled release notes (desktop). Standalone: none. */
+  releaseNotes?: ReleaseNotes;
+  /** The desktop auto-updater behind `/api/admin/update*`. Standalone: none (503). */
+  updater?: UpdaterApi;
 
   /** M0 spike routes (`/api/spike/*`, role-less `/ws`). Default false. */
   spike?: boolean;
@@ -172,6 +177,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     now,
     backupDir,
     logFile: options.logFile,
+    releaseNotes: options.releaseNotes ?? null,
+    updater: options.updater ?? null,
     toastGuest: (guestId, level, message) => hub?.toastGuest(guestId, level, message),
   };
   const wsHub = new WsHub(ctx);
@@ -194,8 +201,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     needsSetup: settings.needsSetup(),
   }));
 
+  app.get('/api/version', async () => ({
+    version: VERSION,
+    protocolVersion: M1_PROTOCOL_VERSION,
+  }));
+
   await registerGuestRoutes(app, ctx);
   await registerAdminRoutes(app, ctx);
+  await registerUpdateRoutes(app, ctx, VERSION);
   await registerSetupRoutes(app, ctx);
 
   const spikeHandler = options.spike

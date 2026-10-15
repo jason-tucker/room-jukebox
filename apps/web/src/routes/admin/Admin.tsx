@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import type { ReleaseNotesReply } from '@room-jukebox/shared';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { Link } from 'react-router';
 import { ToastHost, useToasts } from '../../components/Toasts.tsx';
 import { btn, Field, input, Notice, Spinner, TopBar } from '../../components/ui.tsx';
@@ -13,16 +14,23 @@ import { NowTab } from './NowTab.tsx';
 import { QueueTab } from './QueueTab.tsx';
 import { SettingsTab } from './SettingsTab.tsx';
 import { SystemTab } from './SystemTab.tsx';
+import { unverifiedCount, WhatsNewTab } from './WhatsNewTab.tsx';
 
 type Auth = 'checking' | 'login' | 'in';
 type Tab = keyof typeof S.admin.tabs;
 const TABS = Object.keys(S.admin.tabs) as Tab[];
+/** What's new leads when the installed version still has unverified checklist items. */
+const TABS_NEWS_FIRST: Tab[] = ['whatsNew', ...TABS.filter((t) => t !== 'whatsNew')];
 
 /** /admin (and /settings in the desktop window): phone-first owner page. */
 export function Admin() {
   const [auth, setAuth] = useState<Auth>('checking');
   const [loginNote, setLoginNote] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>('now');
+  const tabPicked = useRef(false);
+  const [notes, setNotes] = useState<ReleaseNotesReply | null>(null);
+  // Decided once per page load, so the tabs do not jump while the owner ticks items off.
+  const [newsFirst, setNewsFirst] = useState(false);
   const { toasts, push } = useToasts();
   const { state, status, client } = useSessionState('admin', { enabled: auth === 'in' });
 
@@ -62,6 +70,22 @@ export function Admin() {
   }, []);
 
   useEffect(() => {
+    if (auth !== 'in') return;
+    let live = true;
+    void api.admin.releaseNotes().then((r) => {
+      if (!live || !r.ok) return;
+      setNotes(r.data);
+      if (unverifiedCount(r.data) > 0) {
+        setNewsFirst(true);
+        if (!tabPicked.current) setTab('whatsNew');
+      }
+    });
+    return () => {
+      live = false;
+    };
+  }, [auth]);
+
+  useEffect(() => {
     if (!client) return;
     return client.onToast((t) => push(t.message, t.level, t.ttlMs));
   }, [client, push]);
@@ -86,6 +110,8 @@ export function Admin() {
     setLoginNote(note);
     setAuth('login');
   };
+
+  const unverified = unverifiedCount(notes);
 
   if (auth === 'checking') {
     return (
@@ -120,15 +146,28 @@ export function Admin() {
         aria-label="Sections"
         className="sticky top-14 z-10 flex gap-2 overflow-x-auto border-b border-line bg-bg px-4 py-2"
       >
-        {TABS.map((t) => (
+        {(newsFirst ? TABS_NEWS_FIRST : TABS).map((t) => (
           <button
             key={t}
             type="button"
             aria-current={tab === t ? 'page' : undefined}
-            onClick={() => setTab(t)}
-            className={`min-h-11 shrink-0 rounded-lg px-4 text-base font-semibold ${tab === t ? 'bg-fg text-bg' : 'bg-surface-2 text-fg'}`}
+            onClick={() => {
+              tabPicked.current = true;
+              setTab(t);
+            }}
+            className={`inline-flex min-h-11 shrink-0 items-center gap-2 rounded-lg px-4 text-base font-semibold ${tab === t ? 'bg-fg text-bg' : 'bg-surface-2 text-fg'}`}
           >
             {S.admin.tabs[t]}
+            {t === 'whatsNew' && unverified > 0 && (
+              <span
+                data-testid="whats-new-badge"
+                title={S.admin.unverified(unverified)}
+                className="grid min-w-6 place-items-center rounded-full bg-accent px-1.5 text-sm text-accent-fg"
+              >
+                <span aria-hidden>{unverified}</span>
+                <span className="sr-only">{`, ${S.admin.unverified(unverified)}`}</span>
+              </span>
+            )}
           </button>
         ))}
       </nav>
@@ -154,6 +193,7 @@ export function Admin() {
                 serverNow={serverNow}
               />
             )}
+            {tab === 'whatsNew' && <WhatsNewTab reply={notes} setReply={setNotes} run={run} />}
             {tab === 'system' && (
               <SystemTab
                 state={state}
