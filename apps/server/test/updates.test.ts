@@ -81,7 +81,7 @@ describe('GET /api/version', () => {
       remoteAddress: '8.8.8.8',
     });
     expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ version: VERSION, protocolVersion: 1 });
+    expect(res.json()).toEqual({ version: VERSION, protocolVersion: 2 });
   });
 });
 

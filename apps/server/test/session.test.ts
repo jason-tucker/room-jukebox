@@ -1,6 +1,6 @@
 import type { AdminState, GuestState, PlayerState } from '@room-jukebox/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { connectWs, flush, Guest, makeHub, setup, vid } from './helpers.ts';
+import { connectPlayer, connectWs, flush, Guest, makeHub, setup, vid } from './helpers.ts';
 import type { TestHub, WsClient } from './helpers.ts';
 
 let hub: TestHub;
@@ -17,10 +17,7 @@ const admin = (method: 'GET' | 'POST' | 'DELETE' | 'PATCH', url: string, payload
 const adminState = async () => (await admin('GET', '/api/admin/session')).json() as AdminState;
 
 async function player(): Promise<WsClient> {
-  const c = await connectWs(
-    hub.app,
-    `/ws?role=player&player=${creds.playerId}&token=${creds.playerToken}`,
-  );
+  const c = await connectPlayer(hub.app, creds.playerId, creds.playerToken);
   await c.next('state');
   return c;
 }

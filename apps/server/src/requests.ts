@@ -1,6 +1,7 @@
 import type { Entry, HistoryEntry } from '@room-jukebox/core';
 import type { AppContext } from './context.ts';
 import { HttpError } from './errors.ts';
+import type { Session } from './session/session.ts';
 
 export interface SubmitInput {
   videoId: string;
@@ -25,9 +26,10 @@ const STATUS: Record<string, number> = {
  */
 export async function submitRequest(
   ctx: AppContext,
+  session: Session,
   input: SubmitInput,
 ): Promise<{ entry: Entry | HistoryEntry; duplicate: boolean }> {
-  const existing = ctx.session.findByKey(input.idempotencyKey);
+  const existing = session.findByKey(input.idempotencyKey);
   if (existing !== undefined) return { entry: existing, duplicate: true };
 
   const resolved = await ctx.youtube.resolve(input.videoId);
@@ -41,11 +43,11 @@ export async function submitRequest(
   }
 
   // Re-check after the await: a retry of the same command may have landed meanwhile.
-  const again = ctx.session.findByKey(input.idempotencyKey);
+  const again = session.findByKey(input.idempotencyKey);
   if (again !== undefined) return { entry: again, duplicate: true };
 
   if (!isOwner) {
-    const check = ctx.session.checkRequest({
+    const check = session.checkRequest({
       guestId: input.guestId as string,
       ip: input.ip,
       videoId: input.videoId,
@@ -61,7 +63,7 @@ export async function submitRequest(
     }
   }
 
-  return ctx.session.enqueue({
+  return session.enqueue({
     videoId: input.videoId,
     title: resolved.title,
     ...(resolved.channelTitle !== undefined ? { channelTitle: resolved.channelTitle } : {}),

@@ -285,3 +285,25 @@ export async function flush(c: WsClient): Promise<void> {
   c.send({ type: 'ping', t0 });
   await c.next('pong', (m) => m.t0 === t0);
 }
+
+/** The Host a test player dials (injectWS sends none unless told). */
+export const INJECT_HOST = { host: 'localhost', port: 8080 };
+
+/**
+ * A player socket that has passed the M2 `auth` handshake (the hub's own TV by default: the
+ * proof comes from `app.jukebox.localPlayerAuth` for the inject Host).
+ */
+export async function connectPlayer(
+  app: App,
+  playerId: string,
+  token: string,
+  opts: { ip?: string; host?: string } = {},
+): Promise<WsClient> {
+  const c = await connectWs(app, `/ws?role=player&player=${playerId}&token=${token}`, {
+    ...(opts.ip ? { ip: opts.ip } : {}),
+    headers: { host: opts.host ?? `${INJECT_HOST.host}:${INJECT_HOST.port}` },
+  });
+  c.send(app.jukebox.localPlayerAuth(playerId, INJECT_HOST.host, INJECT_HOST.port));
+  await c.next('authOk' as never);
+  return c;
+}

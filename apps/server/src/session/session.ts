@@ -1,6 +1,7 @@
 /**
- * The live single-room session (M1): the core queue machine plus pause clock, fallback, player
- * status and failure handling. Every observable change is persisted (queue, history, session
+ * One group's live session: the core queue machine plus pause clock, fallback, player status,
+ * leader election and failure handling. M2 runs one instance per group (`groups.ts`); the main
+ * group keeps the M1 `session` row. Every observable change is persisted (queue, history, session
  * metadata) and then announced to listeners with a new `changeSeq`.
  *
  * Track transitions go only through core: `transition()` (player reports, revision-guarded),
@@ -33,7 +34,7 @@ import type {
   RequestRejection,
 } from '@room-jukebox/core';
 import {
-  M1_PROTOCOL_VERSION,
+  M2_PROTOCOL_VERSION,
   type AdminState,
   type GuestState,
   type M1NowPlaying as NowPlaying,
@@ -42,7 +43,7 @@ import {
   type PlayerState,
 } from '@room-jukebox/shared';
 import type { Repos, SessionData } from '../db/repo.ts';
-import { emptySessionData } from '../db/repo.ts';
+import { emptySessionData, MAIN_GROUP_ID } from '../db/repo.ts';
 import type { LanProvider } from '../lan.ts';
 import type { FriendlyCheck } from '../friendly.ts';
 import { joinUrl, lanReply, wifiQrPayload } from '../lan.ts';
@@ -65,6 +66,8 @@ export const ONLINE_DRIFT_SEC = 1.5;
 export const RECONNECTING_AFTER_MS = 10_000;
 /** A disconnected player becomes Offline after this long. */
 export const OFFLINE_AFTER_MS = 60_000;
+/** The leader must have been heard from within this window (else the next oldest leads). */
+export const LEADER_FAILOVER_MS = 5_000;
 /** Hard cap on queued entries. */
 export const MAX_QUEUE = 300;
 const RECENT_HISTORY = 10;
@@ -77,9 +80,12 @@ export const STOPPED_MESSAGE =
 
 type PlayerStatus = PlayerInfo['status'];
 
-interface LivePlayer {
+/** A player's live status (moves with the player between groups). */
+export interface LivePlayer {
   id: string;
   name: string;
+  /** Leader order: lower = older (the room's creation time). */
+  order: number;
   lanAddress: string | null;
   status: PlayerStatus;
   lastSeen: number;
@@ -107,6 +113,10 @@ export interface RequestInput {
 export type RequestCheck = LimitCheck<RequestRejection | 'queue-full'>;
 
 export interface SessionDeps {
+  /** Default: the main group. */
+  groupId?: string;
+  /** The room name shown to this group's pages (default: the settings' room name). */
+  roomName?: () => string;
   repos: Repos;
   settings: SettingsService;
   youtube: YouTubeService;
@@ -148,12 +158,15 @@ export class Session {
   #lastPositionSave = 0;
   #persistError = false;
   #closed = false;
+  #groupId: string;
+  #lastLeader: string | null = null;
 
   constructor(deps: SessionDeps) {
     this.#d = deps;
-    const stored = deps.repos.queue.load();
-    const history = deps.repos.history.loadAll();
-    const meta = deps.repos.session.load();
+    this.#groupId = deps.groupId ?? MAIN_GROUP_ID;
+    const stored = deps.repos.queue.load(this.#groupId);
+    const history = deps.repos.history.loadAll(this.#groupId);
+    const meta = deps.repos.session.load(this.#groupId);
     this.#state = {
       ...emptyQueueState(),
       revision: meta?.revision ?? 0,
@@ -172,7 +185,10 @@ export class Session {
       this.#resumeFromSec =
         this.#meta.positionRevision === this.#state.revision ? this.#meta.lastPositionSec : 0;
     }
-    for (const p of deps.repos.players.list()) this.#ensurePlayer(p.deviceId, p.name);
+  }
+
+  get groupId(): string {
+    return this.#groupId;
   }
 
   get revision(): number {
@@ -210,13 +226,14 @@ export class Session {
     const { repos } = this.#d;
     const now = this.#d.now();
     try {
-      repos.queue.replace(this.#state.nowPlaying, this.#state.queue, this.#ips);
+      repos.queue.replace(this.#state.nowPlaying, this.#state.queue, this.#ips, this.#groupId);
       const fresh = this.#state.history.slice(this.#persistedHistory);
-      if (fresh.length > 0) repos.history.append(fresh);
+      if (fresh.length > 0) repos.history.append(fresh, this.#groupId);
       this.#persistedHistory = this.#state.history.length;
       repos.session.save(
         { revision: this.#state.revision, changeSeq: this.#changeSeq, data: this.#meta },
         now,
+        this.#groupId,
       );
       this.#persistError = false;
     } catch (err) {
@@ -227,6 +244,7 @@ export class Session {
 
   /** Bumps `changeSeq`, persists, and notifies (one broadcast). */
   #commit(): void {
+    this.#lastLeader = this.#leader()?.id ?? null;
     this.#changeSeq += 1;
     this.#persist();
     for (const l of this.#listeners) {
@@ -494,6 +512,14 @@ export class Session {
 
   /** Forget me / delete guest data: drops the guest's attribution everywhere (history kept). */
   forgetGuest(guestId: string): void {
+    this.#d.repos.history.anonymise(guestId);
+    this.#d.repos.guests.forget(guestId, this.#d.now());
+    this.#d.repos.events.append('guest.forget', {}, this.#d.now());
+    this.stripGuest(guestId);
+  }
+
+  /** Drops the guest's attribution from this session's live state (the database is the caller's). */
+  stripGuest(guestId: string): void {
     const strip = <T extends Entry | HistoryEntry>(e: T): T =>
       e.requester?.guestId === guestId ? { ...e, requester: null } : e;
     this.#state = {
@@ -502,9 +528,6 @@ export class Session {
       queue: this.#state.queue.map(strip),
       history: this.#state.history.map(strip),
     };
-    this.#d.repos.history.anonymise(guestId);
-    this.#d.repos.guests.forget(guestId, this.#d.now());
-    this.#d.repos.events.append('guest.forget', {}, this.#d.now());
     this.#commit();
   }
 
@@ -518,12 +541,13 @@ export class Session {
   // -------------------------------------------------------------------------------------------
   // Players
 
-  #ensurePlayer(id: string, name: string): LivePlayer {
+  #ensurePlayer(id: string, name: string, order = 0): LivePlayer {
     let p = this.#players.get(id);
     if (!p) {
       p = {
         id,
         name,
+        order,
         lanAddress: null,
         status: 'offline',
         lastSeen: 0,
@@ -644,6 +668,11 @@ export class Session {
       if (kind === 'error') {
         p.lastError = { ...(code !== undefined ? { code: String(code) } : {}), message, at: now };
       }
+      // Only the group's leader moves the queue (followers report too; they are ignored).
+      if (this.#leader() !== p) {
+        if (kind === 'error') this.#commit();
+        return { committed: false };
+      }
       const r = transition(this.#state, {
         kind,
         revision,
@@ -739,6 +768,8 @@ export class Session {
         changed = true;
       }
     }
+    // Leader failover (5 s without a heartbeat) changes every player's `me.role`.
+    if (!changed && (this.#leader()?.id ?? null) !== this.#lastLeader) changed = true;
     if (changed) this.#commit();
     return changed;
   }
@@ -755,9 +786,20 @@ export class Session {
     };
   }
 
+  /**
+   * The oldest healthy player (connected and heard from within `LEADER_FAILOVER_MS`); else the
+   * oldest connected one; else the oldest known one.
+   */
   #leader(): LivePlayer | undefined {
-    const connected = [...this.#players.values()].filter((p) => p.sockets > 0);
-    return connected[0] ?? [...this.#players.values()][0];
+    const now = this.#d.now();
+    const all = [...this.#players.values()].sort((a, b) => a.order - b.order);
+    const connected = all.filter((p) => p.sockets > 0);
+    return connected.find((p) => now - p.lastSeen <= LEADER_FAILOVER_MS) ?? connected[0] ?? all[0];
+  }
+
+  /** The current leader's device ID (null without players). */
+  leaderId(): string | null {
+    return this.#leader()?.id ?? null;
   }
 
   #playback(viewer?: string | null): Playback {
@@ -785,8 +827,8 @@ export class Session {
       revision: this.#state.revision,
       changeSeq: this.#changeSeq,
       serverTime: this.#d.now(),
-      protocolVersion: M1_PROTOCOL_VERSION,
-      roomName: this.#d.settings.data().roomName,
+      protocolVersion: M2_PROTOCOL_VERSION,
+      roomName: this.#d.roomName?.() ?? this.#d.settings.data().roomName,
     };
   }
 
@@ -860,6 +902,8 @@ export class Session {
     const settings = this.#d.settings.data();
     const p = this.#players.get(playerId);
     const lan = lanReply(this.#d.lan, settings, this.#d.friendly);
+    // Non-main groups print `<join>/r/<groupId>` so guests act on this group.
+    const suffix = this.#groupId === MAIN_GROUP_ID ? '' : `r/${encodeURIComponent(this.#groupId)}`;
     const leader = this.#leader();
     const lastError = this.#meta.stopped
       ? { code: 'stopped', message: STOPPED_MESSAGE, at: this.#d.now() }
@@ -872,8 +916,8 @@ export class Session {
         requesterName: e.requester?.name ?? null,
       })),
       qr: {
-        lanUrl: lan.lanUrl,
-        joinUrl: joinUrl(lan, settings.lanPort),
+        lanUrl: `${lan.lanUrl}${suffix}`,
+        joinUrl: `${joinUrl(lan, settings.lanPort)}${suffix}`,
         publicUrl: null,
         wifi: wifiQrPayload(settings.wifi, this.#d.settings.wifiPassword()),
         wifiSsid: settings.wifi?.ssid ? settings.wifi.ssid : null,
@@ -891,9 +935,37 @@ export class Session {
     this.#closed = true;
   }
 
-  /** Makes a player device known (status Offline until it connects). */
-  addPlayer(id: string, name: string): void {
-    this.#ensurePlayer(id, name);
+  /** Makes a player device known (status Offline until it connects). `order`: leader order. */
+  addPlayer(id: string, name: string, order = 0): void {
+    this.#ensurePlayer(id, name, order).name = name;
+  }
+
+  hasPlayer(id: string): boolean {
+    return this.#players.has(id);
+  }
+
+  /** Removes a player (moved to another group, or revoked) and returns its live status. */
+  detachPlayer(id: string): LivePlayer | null {
+    const p = this.#players.get(id);
+    if (!p) return null;
+    this.#players.delete(id);
+    this.#commit();
+    return p;
+  }
+
+  /** Adopts a player detached from another group (keeps its sockets and status). */
+  attachPlayer(p: LivePlayer): void {
+    this.#players.set(p.id, p);
+    if (p.sockets > 0) {
+      this.#playerSeenSinceBoot = true;
+      if (this.#pendingFallback || this.#state.nowPlaying === null) this.#fallback();
+    }
+    this.#commit();
+  }
+
+  /** The live entries (now playing first, then the queue). */
+  liveEntries(): Entry[] {
+    return [...(this.#state.nowPlaying ? [this.#state.nowPlaying] : []), ...this.#state.queue];
   }
 
   /** True when the last persist failed (surfaced in logs and healthz-style checks). */

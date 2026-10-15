@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { M1_PROTOCOL_VERSION } from '@room-jukebox/shared';
+import { M2_PROTOCOL_VERSION } from '@room-jukebox/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildApp, VERSION } from '../src/app.ts';
 
@@ -25,7 +25,7 @@ describe('GET /healthz', () => {
     expect(res.json()).toEqual({
       ok: true,
       version: VERSION,
-      protocolVersion: M1_PROTOCOL_VERSION,
+      protocolVersion: M2_PROTOCOL_VERSION,
       needsSetup: true,
     });
   });

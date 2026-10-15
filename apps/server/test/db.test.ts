@@ -38,7 +38,7 @@ describe('migrations', () => {
   it('applies once, records schema_migrations, uses WAL', async () => {
     const path = join(tmp(), 'data.db');
     const first = await openDb(path);
-    expect(first.applied).toEqual([1, 2]);
+    expect(first.applied).toEqual([1, 2, 3]);
     expect(first.db.prepare('PRAGMA journal_mode').get()).toEqual({ journal_mode: 'wal' });
     closeDb(first.db);
     const second = await openDb(path);
@@ -46,6 +46,7 @@ describe('migrations', () => {
     expect(second.db.prepare('SELECT version, name FROM schema_migrations').all()).toEqual([
       { version: 1, name: '0001_init.sql' },
       { version: 2, name: '0002_search_provider.sql' },
+      { version: 3, name: '0003_m2.sql' },
     ]);
     closeDb(second.db);
   });

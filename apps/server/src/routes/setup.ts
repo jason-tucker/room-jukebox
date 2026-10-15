@@ -6,6 +6,7 @@ import type { AppContext } from '../context.ts';
 import { requireLoopback, runHook } from '../context.ts';
 import { HttpError, parse } from '../errors.ts';
 import { lanReply } from '../lan.ts';
+import { isLocalPlayer, LOCAL_PLAYER_PREFIX } from '../session/groups.ts';
 
 /** Name and ID prefix of the hub's own TV player device. */
 export const LOCAL_PLAYER_NAME = 'TV';
@@ -15,12 +16,13 @@ export const LOCAL_PLAYER_NAME = 'TV';
  * Only the hash is stored; the previous token stops working.
  */
 export function issueLocalPlayerToken(ctx: AppContext): { playerId: string; token: string } {
-  const existing = ctx.repos.players.list()[0];
-  const playerId = existing?.deviceId ?? `tv-${randomUUID()}`;
+  const existing = ctx.repos.players.list().find((p) => isLocalPlayer(p.deviceId));
+  const playerId = existing?.deviceId ?? `${LOCAL_PLAYER_PREFIX}${randomUUID()}`;
   const token = newToken();
   const name = existing?.name ?? LOCAL_PLAYER_NAME;
   ctx.repos.players.upsert(playerId, name, hashToken(token), ctx.now());
-  ctx.session.addPlayer(playerId, name);
+  // The hub's own TV is a room of the main group.
+  ctx.groups.ensureRoom(playerId, name);
   return { playerId, token };
 }
 
@@ -57,6 +59,7 @@ export async function registerSetupRoutes(app: FastifyInstance, ctx: AppContext)
     if (body.youtubeApiKey !== undefined) ctx.settings.setApiKey(body.youtubeApiKey);
     ctx.repos.settings.setNoticeAccepted(now);
 
+    ctx.household.ensure();
     const player = issueLocalPlayerToken(ctx);
     const token = ctx.auth.createSession('desktop', true);
     ctx.repos.events.append('setup', { roomName: data.roomName }, now);
@@ -70,7 +73,7 @@ export async function registerSetupRoutes(app: FastifyInstance, ctx: AppContext)
         ctx.youtube.recordPlaylistError(url, message);
       }
     }
-    ctx.session.touch();
+    ctx.groups.touchAll();
     await runHook(request, () =>
       ctx.hooks.onSetupComplete?.({ token, playerToken: player.token, playerId: player.playerId }),
     );

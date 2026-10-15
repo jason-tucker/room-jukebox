@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { hashPassword, verifyPassword } from '../src/auth/crypto.ts';
 import { checkHouseholdSource, inCidr, normaliseIp } from '../src/auth/gate.ts';
 import { signGuestCookie, verifyGuestCookie } from '../src/auth/guest-cookie.ts';
-import { connectWs, LOOPBACK, makeHub, setup } from './helpers.ts';
+import { connectPlayer, connectWs, LOOPBACK, makeHub, setup } from './helpers.ts';
 import type { TestHub } from './helpers.ts';
 
 const SUBNETS = ['192.168.1.20/24'];
@@ -272,7 +272,7 @@ describe('auth gates (integration)', () => {
 
   it('healthz reports needsSetup', async () => {
     const res = await hub.app.inject({ url: '/healthz' });
-    expect(res.json()).toMatchObject({ ok: true, protocolVersion: 1, needsSetup: false });
+    expect(res.json()).toMatchObject({ ok: true, protocolVersion: 2, needsSetup: false });
   });
 
   it('player and admin sockets need the gate and a token', async () => {
@@ -318,10 +318,7 @@ describe('before setup', () => {
     try {
       const r = await setup(hub.app);
       expect(seen).toEqual([{ token: r.token, playerToken: r.playerToken, playerId: r.playerId }]);
-      const c = await connectWs(
-        hub.app,
-        `/ws?role=player&player=${r.playerId}&token=${r.playerToken}`,
-      );
+      const c = await connectPlayer(hub.app, r.playerId, r.playerToken);
       const st = await c.next('state');
       expect(st.state).toMatchObject({ me: { playerId: r.playerId, role: 'leader' } });
       c.ws.terminate();

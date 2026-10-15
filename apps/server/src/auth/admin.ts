@@ -75,10 +75,19 @@ export class AdminAuth {
     this.#repos.settings.setPasswordVerifier(verifier, this.#now());
   }
 
-  /** Password change: verifies `current`, stores `next`, invalidates every admin session. */
-  async changePassword(current: string, next: string, ip: string): Promise<void> {
+  /**
+   * Password change: verifies `current`, stores `next`, runs `beforeInvalidate` (M2: household
+   * key rotation and `rekey`), then invalidates every admin session.
+   */
+  async changePassword(
+    current: string,
+    next: string,
+    ip: string,
+    beforeInvalidate?: () => void,
+  ): Promise<void> {
     await this.checkPassword(current, ip);
     await this.setPassword(next);
+    beforeInvalidate?.();
     this.#repos.adminSessions.deleteAll();
     this.#repos.events.append('admin.password-changed', {}, this.#now());
   }

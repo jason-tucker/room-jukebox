@@ -22,6 +22,9 @@ const NameBodySchema = z.object({ name: z.string().trim().min(1).max(40).nullabl
 const NoticeBodySchema = z.object({ accepted: z.literal(true) });
 const ResolveQuerySchema = z.object({ input: z.string().min(1).max(2000) });
 const SuggestQuerySchema = z.object({ q: z.string().max(200).default('') });
+const GroupQuerySchema = z.object({ group: z.string().max(200).optional() });
+/** M2: `POST /api/requests` may name the group (`/r/<groupId>` pages); default main. */
+const RequestGroupSchema = z.object({ groupId: z.string().max(200).optional() });
 
 /** Guest routes: open on the LAN listener (no household gate). */
 export async function registerGuestRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
@@ -57,12 +60,16 @@ export async function registerGuestRoutes(app: FastifyInstance, ctx: AppContext)
 
   app.post('/api/guest/forget', async (request, reply) => {
     const guestId = guestFrom(ctx, request);
-    if (guestId !== null) ctx.session.forgetGuest(guestId);
+    if (guestId !== null) ctx.groups.forgetGuest(guestId);
     void reply.clearCookie(GUEST_COOKIE, { path: '/' });
     return { ok: true as const };
   });
 
-  app.get('/api/session', async (request) => ctx.session.toGuestState(guestFrom(ctx, request)));
+  // `?group=<groupId>`: that group's state (unknown or merged groups fall back to main).
+  app.get('/api/session', async (request) => {
+    const { group } = parse(GroupQuerySchema, request.query);
+    return ctx.groups.resolve(group).toGuestState(guestFrom(ctx, request));
+  });
 
   app.get('/api/videos/resolve', async (request) => {
     const { input } = parse(ResolveQuerySchema, request.query);
@@ -79,11 +86,12 @@ export async function registerGuestRoutes(app: FastifyInstance, ctx: AppContext)
 
   app.post('/api/requests', async (request, reply) => {
     const body = parse(RequestBodySchema, request.body);
+    const { groupId } = parse(RequestGroupSchema, request.body);
     const guestId = ensureGuest(ctx, request, reply);
     if (body.name !== undefined) ctx.repos.guests.setName(guestId, body.name);
     const name = ctx.repos.guests.get(guestId)?.name ?? null;
     try {
-      const r = await submitRequest(ctx, {
+      const r = await submitRequest(ctx, ctx.groups.resolve(groupId), {
         videoId: body.videoId,
         idempotencyKey: body.idempotencyKey,
         guestId,
@@ -112,7 +120,7 @@ export async function registerGuestRoutes(app: FastifyInstance, ctx: AppContext)
       now: ctx.now(),
     });
     // A cache miss spent budget: everyone's "searches left" changed.
-    if (!result.cached) ctx.session.touch();
+    if (!result.cached) ctx.groups.touchAll();
     return result;
   });
 

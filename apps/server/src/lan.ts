@@ -105,3 +105,32 @@ export function wifiQrPayload(wifi: SettingsData['wifi'], password: string | nul
   const pw = wifi.security === 'nopass' ? '' : `P:${escapeWifi(password ?? '')};`;
   return `WIFI:T:${wifi.security};S:${escapeWifi(wifi.ssid)};${pw}${wifi.hidden ? 'H:true;' : ''};`;
 }
+
+/** The port a player assumes when the URL it dialled has none. */
+export const DEFAULT_DIALLED_PORT = 8080;
+
+/**
+ * The hub address a player proved for (contract-m2 §1 binding): the `Host` header of its
+ * request, as `URL.hostname` (IPv6 keeps its brackets) and the port (default 8080). The hub's
+ * own TV window dials `localhost`/`127.0.0.1` on LAN_PORT.
+ */
+export function dialledAddress(host: string | undefined): { hubAddress: string; hubPort: number } {
+  try {
+    const url = new URL(`http://${host ?? ''}`);
+    if (url.hostname === '') throw new Error('no host');
+    return {
+      hubAddress: url.hostname,
+      hubPort: url.port === '' ? DEFAULT_DIALLED_PORT : Number(url.port),
+    };
+  } catch {
+    return { hubAddress: '', hubPort: DEFAULT_DIALLED_PORT };
+  }
+}
+
+/** `http://<host>[:port]` from `host`, `host:port` or a URL (no trailing slash). */
+export function hubOrigin(address: string, port?: number): string {
+  const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(address) ? address : `http://${address}`;
+  const url = new URL(withScheme);
+  if (port !== undefined && url.port === '') url.port = String(port);
+  return url.origin;
+}

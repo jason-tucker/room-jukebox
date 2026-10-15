@@ -12,6 +12,9 @@ import {
 import type { Repos } from './db/repo.ts';
 import { HttpError } from './errors.ts';
 import type { FriendlyCheck } from './friendly.ts';
+import type { Household } from './household.ts';
+import type { ReplicaService } from './replica.ts';
+import type { Groups } from './session/groups.ts';
 import type { LanProvider } from './lan.ts';
 import { safeAddresses } from './lan.ts';
 import type { Session } from './session/session.ts';
@@ -54,7 +57,12 @@ export interface AppContext {
   auth: AdminAuth;
   youtube: YouTubeService;
   suggest: SuggestService;
+  /** The main group's session (M1 routes). */
   session: Session;
+  /** Every group's session (M2). */
+  groups: Groups;
+  household: Household;
+  replica: ReplicaService;
   lan: LanProvider;
   friendly: FriendlyCheck;
   hooks: AppHooks;
@@ -66,6 +74,18 @@ export interface AppContext {
   updater: UpdaterApi | null;
   /** Sends a toast to every socket of `guestId`. */
   toastGuest: (guestId: string, level: 'info' | 'warn' | 'error', message: string) => void;
+  /**
+   * Rotates the household key, pushes `rekey` to every other authenticated remote player, then
+   * closes their sockets (and `revoked`'s socket without a rekey).
+   */
+  rekey: (reason: 'revoke' | 'password', revoked?: string) => void;
+}
+
+/** The session a request addresses: `?group=` (unknown or absent → the main group). */
+export function groupSession(ctx: AppContext, request: FastifyRequest): Session {
+  const q = request.query as Record<string, unknown> | undefined;
+  const group = typeof q?.group === 'string' ? q.group : null;
+  return ctx.groups.resolve(group);
 }
 
 export function subnets(lan: LanProvider): string[] {

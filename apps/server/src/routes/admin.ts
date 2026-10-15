@@ -17,7 +17,7 @@ import { ADMIN_COOKIE, ADMIN_SESSION_MS } from '../auth/admin.ts';
 import type { AdminClient } from '../auth/admin.ts';
 import { sourceIp } from '../auth/gate.ts';
 import type { AppContext } from '../context.ts';
-import { requireAdmin, requireHousehold, runHook } from '../context.ts';
+import { groupSession, requireAdmin, requireHousehold, runHook } from '../context.ts';
 import { backup, listBackups } from '../db/backup.ts';
 import { HttpError, parse } from '../errors.ts';
 import { lanReply, safeAddresses } from '../lan.ts';
@@ -91,10 +91,10 @@ export function issueAdminSession(
 
 export async function registerAdminRoutes(app: FastifyInstance, ctx: AppContext): Promise<void> {
   const keys = new RecentKeys();
-  const ack = () => ({
+  const ack = (session = ctx.session) => ({
     ok: true as const,
-    revision: ctx.session.revision,
-    changeSeq: ctx.session.changeSeq,
+    revision: session.revision,
+    changeSeq: session.changeSeq,
   });
 
   app.post('/api/admin/login', async (request, reply) => {
@@ -119,40 +119,45 @@ export async function registerAdminRoutes(app: FastifyInstance, ctx: AppContext)
     return { ok: true as const };
   });
 
+  // `?group=<groupId>` on the session, transport, queue and request routes acts on that group
+  // (default: the main group).
   app.get('/api/admin/session', async (request) => {
     requireAdmin(ctx, request);
-    return ctx.session.toAdminState();
+    return ctx.groups.adminState(groupSession(ctx, request).groupId);
   });
 
   app.post('/api/admin/transport', async (request) => {
     requireAdmin(ctx, request);
     const body = parse(TransportBodySchema, request.body);
-    if (!keys.seen(body.idempotencyKey)) ctx.session.transport(body.action);
-    return ack();
+    const session = groupSession(ctx, request);
+    if (!keys.seen(body.idempotencyKey)) session.transport(body.action);
+    return ack(session);
   });
 
   app.post('/api/admin/queue/reorder', async (request) => {
     requireAdmin(ctx, request);
     const body = parse(ReorderBodySchema, request.body);
-    if (!keys.seen(body.idempotencyKey) && !ctx.session.reorder(body.id, body.toIndex)) {
+    const session = groupSession(ctx, request);
+    if (!keys.seen(body.idempotencyKey) && !session.reorder(body.id, body.toIndex)) {
       throw new HttpError(404, 'not-found', 'That song is no longer in the queue.');
     }
-    return ack();
+    return ack(session);
   });
 
   app.delete('/api/admin/queue/:id', async (request) => {
     requireAdmin(ctx, request);
     const { id } = parse(IdParamsSchema, request.params);
-    if (!ctx.session.remove(id)) {
+    const session = groupSession(ctx, request);
+    if (!session.remove(id)) {
       throw new HttpError(404, 'not-found', 'That song is no longer in the queue.');
     }
-    return ack();
+    return ack(session);
   });
 
   app.post('/api/admin/requests', async (request, reply) => {
     requireAdmin(ctx, request);
     const body = parse(RequestBodySchema, request.body);
-    const r = await submitRequest(ctx, {
+    const r = await submitRequest(ctx, groupSession(ctx, request), {
       videoId: body.videoId,
       idempotencyKey: body.idempotencyKey,
       guestId: null,
@@ -174,7 +179,7 @@ export async function registerAdminRoutes(app: FastifyInstance, ctx: AppContext)
     const settings = ctx.settings.patch(patch);
     if (patch.friendlyHost !== undefined) await ctx.friendly.recheck();
     ctx.repos.events.append('admin.settings', { fields: Object.keys(patch) }, ctx.now());
-    ctx.session.touch();
+    ctx.groups.touchAll();
     await runHook(request, () => ctx.hooks.onSettingsChanged?.(settings));
     return settings;
   });
@@ -182,7 +187,10 @@ export async function registerAdminRoutes(app: FastifyInstance, ctx: AppContext)
   app.post('/api/admin/password', async (request, reply) => {
     requireAdmin(ctx, request);
     const body = parse(PasswordChangeBodySchema, request.body);
-    await ctx.auth.changePassword(body.current, body.next, sourceIp(request));
+    // The household key rotates (and players get `rekey`) before the sessions are invalidated.
+    await ctx.auth.changePassword(body.current, body.next, sourceIp(request), () =>
+      ctx.rekey('password'),
+    );
     // Every session is gone; the caller gets a fresh one so it stays signed in.
     return issueAdminSession(ctx, request, reply);
   });
@@ -191,7 +199,7 @@ export async function registerAdminRoutes(app: FastifyInstance, ctx: AppContext)
     requireAdmin(ctx, request);
     const body = parse(PlaylistBodySchema, request.body);
     const info = await ctx.youtube.importPlaylist(body.url);
-    ctx.session.touch();
+    ctx.groups.touchAll();
     return info;
   });
 
@@ -201,7 +209,7 @@ export async function registerAdminRoutes(app: FastifyInstance, ctx: AppContext)
     if (!ctx.repos.playlists.delete(id)) {
       throw new HttpError(404, 'not-found', 'That playlist is not in the fallback list.');
     }
-    ctx.session.touch();
+    ctx.groups.touchAll();
     return { ok: true as const };
   });
 
@@ -218,7 +226,7 @@ export async function registerAdminRoutes(app: FastifyInstance, ctx: AppContext)
       if (err instanceof HttpError) ctx.repos.playlists.upsert({ ...row, lastError: err.message });
       throw err;
     }
-    ctx.session.touch();
+    ctx.groups.touchAll();
     return info;
   });
 
@@ -232,7 +240,7 @@ export async function registerAdminRoutes(app: FastifyInstance, ctx: AppContext)
       isPublic: false,
       now: ctx.now(),
     });
-    if (!result.cached) ctx.session.touch();
+    if (!result.cached) ctx.groups.touchAll();
     return result;
   });
 
@@ -256,13 +264,13 @@ export async function registerAdminRoutes(app: FastifyInstance, ctx: AppContext)
   app.delete('/api/admin/guests/:guestId', async (request) => {
     requireAdmin(ctx, request);
     const { guestId } = parse(GuestParamsSchema, request.params);
-    ctx.session.forgetGuest(guestId);
+    ctx.groups.forgetGuest(guestId);
     return { ok: true as const };
   });
 
   app.get('/api/admin/players', async (request) => {
     requireAdmin(ctx, request);
-    return { players: ctx.session.players() };
+    return { players: ctx.groups.players() };
   });
 
   app.get('/api/admin/lan', async (request) => {
@@ -277,7 +285,7 @@ export async function registerAdminRoutes(app: FastifyInstance, ctx: AppContext)
       throw new HttpError(400, 'bad-request', `${chosen} is not one of this laptop's addresses.`);
     }
     ctx.settings.setData({ ...ctx.settings.data(), lanChosen: chosen });
-    ctx.session.touch();
+    ctx.groups.touchAll();
     return lanReply(ctx.lan, ctx.settings.data(), ctx.friendly);
   });
 

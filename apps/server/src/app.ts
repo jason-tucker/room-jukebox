@@ -5,8 +5,14 @@ import cookie from '@fastify/cookie';
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import websocket from '@fastify/websocket';
-import type { HealthReply, LanReply, ReleaseNotes, SettingsPublic } from '@room-jukebox/shared';
-import { M1_PROTOCOL_VERSION } from '@room-jukebox/shared';
+import type {
+  HealthReply,
+  M2ClientMessage,
+  LanReply,
+  ReleaseNotes,
+  SettingsPublic,
+} from '@room-jukebox/shared';
+import { M2_PROTOCOL_VERSION } from '@room-jukebox/shared';
 import Fastify from 'fastify';
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import pkg from '../package.json' with { type: 'json' };
@@ -19,14 +25,18 @@ import { Repos } from './db/repo.ts';
 import { installErrorHandler } from './errors.ts';
 import { FriendlyCheck, dnsResolver } from './friendly.ts';
 import type { HostResolver } from './friendly.ts';
+import { Household, joinProof, newNonce } from './household.ts';
 import type { LanProvider } from './lan.ts';
-import { lanReply, osLan } from './lan.ts';
+import { hubOrigin, lanReply, osLan } from './lan.ts';
+import { ReplicaService } from './replica.ts';
 import { registerAdminRoutes } from './routes/admin.ts';
 import { registerGuestRoutes } from './routes/guest.ts';
+import { registerM2Routes } from './routes/m2.ts';
 import { issueLocalPlayerToken, registerSetupRoutes } from './routes/setup.ts';
 import { registerUpdateRoutes } from './routes/updates.ts';
 import { registerWs, WsHub } from './routes/ws.ts';
-import { Session } from './session/session.ts';
+import { Groups } from './session/groups.ts';
+import type { Session } from './session/session.ts';
 import type { Secrets } from './settings.ts';
 import { identitySecrets, SettingsService } from './settings.ts';
 import { registerSpike } from './spike/plugin.ts';
@@ -53,7 +63,24 @@ const DEFAULT_WEB_ROOT = fileURLToPath(new URL('../../web/dist/', import.meta.ur
 /** The default restart-rule window (plan §3.4). */
 export const RESTART_GRACE_MS = 10_000;
 
+/** Player mode (M2): where the hub is. */
+export interface PlayerModeHub {
+  /** The hub's address: `host`, `host:port` or `http://host:port`. */
+  address: string;
+  /** Used when `address` has no port. */
+  port?: number;
+  epoch: number;
+  roomName: string;
+}
+
 export interface BuildAppOptions {
+  /**
+   * `hub` (default): the full server. `player` (M2, a Player laptop on LAN_PORT): only
+   * `/hub.json`, `/healthz` and 302 redirects of `/`, `/r/*` and `/admin` to `hub`. No database.
+   */
+  mode?: 'hub' | 'player';
+  /** Required with `mode: 'player'`. */
+  hub?: PlayerModeHub;
   loggerInstance?: FastifyBaseLogger;
   /** Directory of the built SPA. Static serving is skipped when it does not exist. */
   webRoot?: string;
@@ -96,6 +123,14 @@ export interface BuildAppOptions {
   nightlyBackup?: boolean;
 }
 
+export interface HouseholdInfo {
+  hubId: string;
+  hubEpoch: number;
+  keyEpoch: number;
+  householdKey: string;
+  roomName: string;
+}
+
 /** In-process API for the desktop shell (`app.jukebox`). */
 export interface JukeboxApi {
   needsSetup(): boolean;
@@ -104,8 +139,21 @@ export interface JukeboxApi {
   /** A fresh token for the hub's own TV window (`/tv?player=<playerId>&token=<token>`). */
   issueLocalPlayerToken(): { playerId: string; token: string };
   backupNow(): Promise<BackupInfo>;
-  /** Live session (tests and diagnostics). */
+  /** Live session of the main group (tests and diagnostics). */
   session: Session;
+  /** Every group's session (M2). */
+  groups: Groups;
+  /** The household key (base64) and hub identity for beacons and local proofs; null before setup. */
+  household(): HouseholdInfo | null;
+  /**
+   * A first message for a socket the hub's own TV opens at `http://<host>:<port>` (default
+   * `localhost` and LAN_PORT): `auth` with a fresh nonce.
+   */
+  localPlayerAuth(
+    deviceId: string,
+    host?: string,
+    port?: number,
+  ): Extract<M2ClientMessage, { type: 'auth' }>;
   /** Applies the restart rule now (tests). */
   applyRestartRule(): boolean;
 }
@@ -117,6 +165,7 @@ declare module 'fastify' {
 }
 
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
+  if (options.mode === 'player') return buildPlayerApp(options);
   const app = Fastify({
     ...(options.loggerInstance ? { loggerInstance: options.loggerInstance } : { logger: false }),
     // Passed only when set: the top-level option is deprecated (a warning) in Fastify 5.
@@ -150,7 +199,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     settings: () => settings.data(),
     resolve: options.resolveHost ?? dnsResolver,
     now,
-    onChange: () => session.touch(),
+    onChange: () => groups.touchAll(),
   });
   const fetchImpl = options.fetch ?? fetch;
   const api = createYouTubeApi(fetchImpl, (call) => {
@@ -168,7 +217,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     unofficial: (q) => searchUnofficial(q, { fetch: fetchImpl }),
     now,
   });
-  const session = new Session({
+  const groups = new Groups({
     repos,
     settings,
     youtube,
@@ -178,6 +227,10 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     rng: options.rng ?? Math.random,
     onError: (err) => app.log.error({ err }, 'session persist failed'),
   });
+  const session = groups.main;
+  const household = new Household({ repos, secrets: options.secrets ?? identitySecrets, now });
+  if (!settings.needsSetup()) household.ensure();
+  const replica = new ReplicaService({ repos, settings, household, groups, now });
 
   friendly.start();
   app.addHook('onClose', async () => friendly.stop());
@@ -190,6 +243,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     youtube,
     suggest: new SuggestService({ fetch: fetchImpl, now }),
     session,
+    groups,
+    household,
+    replica,
     lan,
     friendly,
     hooks: options.hooks ?? {},
@@ -199,6 +255,11 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     releaseNotes: options.releaseNotes ?? null,
     updater: options.updater ?? null,
     toastGuest: (guestId, level, message) => hub?.toastGuest(guestId, level, message),
+    rekey: (reason, revoked) => {
+      const next = household.rotateHouseholdKey();
+      repos.events.append('household.rekey', { reason, keyEpoch: next.keyEpoch }, now());
+      hub?.rekey(next.householdKey, next.keyEpoch, revoked);
+    },
   };
   const wsHub = new WsHub(ctx);
   hub = wsHub;
@@ -221,25 +282,53 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     issueLocalPlayerToken: () => issueLocalPlayerToken(ctx),
     backupNow: () => backup(db, backupDir, now(), 'manual'),
     session,
-    applyRestartRule: () => session.applyRestartRule(),
+    groups,
+    household: () => {
+      if (settings.needsSetup()) return null;
+      const data = settings.data();
+      return {
+        hubId: data.hubId,
+        hubEpoch: data.hubEpoch,
+        keyEpoch: household.keyEpoch(),
+        householdKey: household.key(),
+        roomName: data.roomName,
+      };
+    },
+    localPlayerAuth: (deviceId, host = 'localhost', port = settings.data().lanPort) => {
+      const nonceP = newNonce();
+      const proof = joinProof(household.keys().playerProof, {
+        deviceId,
+        hubId: settings.data().hubId,
+        nonceP,
+        hubAddress: host,
+        hubPort: port,
+      });
+      return { type: 'auth', deviceId, nonceP, proof };
+    },
+    applyRestartRule: () => {
+      let any = false;
+      for (const s of groups.sessions()) any = s.applyRestartRule() || any;
+      return any;
+    },
   } satisfies JukeboxApi);
 
   app.get('/healthz', async (): Promise<HealthReply> => ({
     ok: true,
     version: VERSION,
-    protocolVersion: M1_PROTOCOL_VERSION,
+    protocolVersion: M2_PROTOCOL_VERSION,
     needsSetup: settings.needsSetup(),
   }));
 
   app.get('/api/version', async () => ({
     version: VERSION,
-    protocolVersion: M1_PROTOCOL_VERSION,
+    protocolVersion: M2_PROTOCOL_VERSION,
   }));
 
   await registerGuestRoutes(app, ctx);
   await registerAdminRoutes(app, ctx);
   await registerUpdateRoutes(app, ctx, VERSION);
   await registerSetupRoutes(app, ctx);
+  await registerM2Routes(app, ctx);
   await registerMirror(app, { fetch: fetchImpl, enabled: () => settings.mirrorEnabled(), now });
 
   const spikeHandler = options.spike
@@ -256,7 +345,9 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   const timers: ReturnType<typeof setTimeout>[] = [];
   const grace = options.restartGraceMs ?? RESTART_GRACE_MS;
   if (grace >= 0) {
-    const t = setTimeout(() => session.applyRestartRule(), grace);
+    const t = setTimeout(() => {
+      for (const s of groups.sessions()) s.applyRestartRule();
+    }, grace);
     t.unref();
     timers.push(t);
   }
@@ -270,7 +361,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     for (const t of timers) clearTimeout(t);
     scheduler.stop();
     wsHub.stop();
-    session.close();
+    groups.close();
     closeDb(db);
   });
 
@@ -287,5 +378,53 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     });
   });
 
+  return app;
+}
+
+/**
+ * Player mode (M2): a Player laptop answers `/hub.json` (open CORS) so phones can find the
+ * current hub, and sends its own guests and owner to the hub. Nothing else is registered.
+ */
+async function buildPlayerApp(options: BuildAppOptions): Promise<FastifyInstance> {
+  const hub = options.hub;
+  if (!hub) throw new Error("buildApp({ mode: 'player' }) needs `hub`");
+  const app = Fastify({
+    ...(options.loggerInstance ? { loggerInstance: options.loggerInstance } : { logger: false }),
+    ...(options.disableRequestLogging ? { disableRequestLogging: true } : {}),
+  });
+  installErrorHandler(app);
+  const origin = hubOrigin(hub.address, hub.port);
+
+  app.get('/healthz', async (): Promise<HealthReply> => ({
+    ok: true,
+    version: VERSION,
+    protocolVersion: M2_PROTOCOL_VERSION,
+    needsSetup: false,
+  }));
+
+  app.get('/hub.json', async (_request, reply) => {
+    void reply.header('Access-Control-Allow-Origin', '*');
+    return {
+      hubAddress: origin,
+      hubEpoch: hub.epoch,
+      protocolVersion: M2_PROTOCOL_VERSION,
+      roomName: hub.roomName,
+    };
+  });
+
+  const redirect = async (
+    request: { url: string },
+    reply: { redirect(url: string, code?: number): unknown },
+  ) => reply.redirect(`${origin}${request.url}`, 302);
+  app.get('/', redirect);
+  app.get('/admin', redirect);
+  app.get('/admin/*', redirect);
+  app.get('/r/*', redirect);
+
+  app.setNotFoundHandler((request, reply) =>
+    reply.code(404).send({
+      error: { code: 'not-found', message: `No route for ${request.method} ${request.url}` },
+    }),
+  );
   return app;
 }

@@ -60,6 +60,8 @@ export interface SettingsData {
   search?: { source?: SearchSource; unofficialFallback?: boolean; mirror?: boolean };
   /** Owner's release checklist ticks (M1.5); absent until the first tick. */
   checklist?: ChecklistState;
+  /** Household key generation (M2); bumped by every rotation. Absent = 0. */
+  keyEpoch?: number;
 }
 
 export interface SettingsRow {
@@ -70,6 +72,8 @@ export interface SettingsRow {
   wifiPasswordEnc: string | null;
   guestSecret: string;
   noticeAcceptedAt: number | null;
+  /** M2 household key (base64), encrypted with the app's `Secrets`. */
+  householdKeyEnc: string | null;
 }
 
 export class SettingsRepo {
@@ -89,6 +93,7 @@ export class SettingsRepo {
       wifiPasswordEnc: nullStr(r.wifi_password_enc),
       guestSecret: str(r.guest_secret),
       noticeAcceptedAt: nullNum(r.notice_accepted_at),
+      householdKeyEnc: nullStr(r.household_key_enc),
     };
   }
 
@@ -124,6 +129,12 @@ export class SettingsRepo {
     this.#db
       .prepare('UPDATE settings SET wifi_password_enc = ?, updated_at = ? WHERE id = 1')
       .run(enc, now);
+  }
+
+  setHouseholdKey(enc: string, data: SettingsData, now: number): void {
+    this.#db
+      .prepare('UPDATE settings SET household_key_enc = ?, data = ?, updated_at = ? WHERE id = 1')
+      .run(enc, JSON.stringify(data), now);
   }
 
   setNoticeAccepted(at: number): void {
@@ -182,8 +193,11 @@ export class SessionRepo {
     this.#db = db;
   }
 
-  load(): SessionMeta | null {
-    const r = this.#db.prepare('SELECT * FROM session WHERE id = 1').get();
+  load(groupId: string = MAIN_GROUP_ID): SessionMeta | null {
+    const r =
+      groupId === MAIN_GROUP_ID
+        ? this.#db.prepare('SELECT * FROM session WHERE id = 1').get()
+        : this.#db.prepare('SELECT * FROM group_sessions WHERE group_id = ?').get(groupId);
     if (r === undefined) return null;
     return {
       revision: num(r.revision),
@@ -192,7 +206,17 @@ export class SessionRepo {
     };
   }
 
-  save(meta: SessionMeta, now: number): void {
+  save(meta: SessionMeta, now: number, groupId: string = MAIN_GROUP_ID): void {
+    if (groupId !== MAIN_GROUP_ID) {
+      this.#db
+        .prepare(
+          `INSERT INTO group_sessions (group_id, revision, change_seq, data, updated_at) VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT (group_id) DO UPDATE SET revision = excluded.revision,
+             change_seq = excluded.change_seq, data = excluded.data, updated_at = excluded.updated_at`,
+        )
+        .run(groupId, meta.revision, meta.changeSeq, JSON.stringify(meta.data), now);
+      return;
+    }
     this.#db
       .prepare(
         `INSERT INTO session (id, revision, change_seq, data, updated_at) VALUES (1, ?, ?, ?, ?)
@@ -200,6 +224,11 @@ export class SessionRepo {
            data = excluded.data, updated_at = excluded.updated_at`,
       )
       .run(meta.revision, meta.changeSeq, JSON.stringify(meta.data), now);
+  }
+
+  /** Drops a non-main group's metadata. */
+  delete(groupId: string): void {
+    this.#db.prepare('DELETE FROM group_sessions WHERE group_id = ?').run(groupId);
   }
 }
 
@@ -268,8 +297,10 @@ export class QueueRepo {
     this.#db = db;
   }
 
-  load(): StoredQueue {
-    const rows = this.#db.prepare('SELECT * FROM queue_entries ORDER BY position').all();
+  load(groupId: string = MAIN_GROUP_ID): StoredQueue {
+    const rows = this.#db
+      .prepare('SELECT * FROM queue_entries WHERE group_id = ? ORDER BY position')
+      .all(groupId);
     const ips = new Map<string, string>();
     let nowPlaying: Entry | null = null;
     const queue: Entry[] = [];
@@ -282,23 +313,33 @@ export class QueueRepo {
     return { nowPlaying, queue, ips };
   }
 
-  replace(nowPlaying: Entry | null, queue: readonly Entry[], ips: ReadonlyMap<string, string>) {
+  replace(
+    nowPlaying: Entry | null,
+    queue: readonly Entry[],
+    ips: ReadonlyMap<string, string>,
+    groupId: string = MAIN_GROUP_ID,
+  ) {
     transaction(this.#db, () => {
-      this.#db.exec('DELETE FROM queue_entries');
+      this.#db.prepare('DELETE FROM queue_entries WHERE group_id = ?').run(groupId);
       const insert = this.#db.prepare(
         `INSERT INTO queue_entries (id, status, video_id, title, channel_title, thumbnail, duration_sec,
            source, requester_guest_id, requester_name, idempotency_key, enqueued_at, started_at, restarted,
-           position, requester_ip)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           position, requester_ip, group_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       );
       const all: [Entry, number][] = [
         ...(nowPlaying ? [[nowPlaying, -1] as [Entry, number]] : []),
         ...queue.map((e, i) => [e, i] as [Entry, number]),
       ];
       for (const [e, position] of all) {
-        insert.run(...entryParams(e), position, ips.get(e.id) ?? null);
+        insert.run(...entryParams(e), position, ips.get(e.id) ?? null, groupId);
       }
     });
+  }
+
+  /** Drops a group's queue (the group was merged back into the main group). */
+  deleteGroup(groupId: string): void {
+    this.#db.prepare('DELETE FROM queue_entries WHERE group_id = ?').run(groupId);
   }
 }
 
@@ -308,10 +349,10 @@ export class HistoryRepo {
     this.#db = db;
   }
 
-  loadAll(): HistoryEntry[] {
+  loadAll(groupId: string = MAIN_GROUP_ID): HistoryEntry[] {
     return this.#db
-      .prepare('SELECT * FROM history ORDER BY seq')
-      .all()
+      .prepare('SELECT * FROM history WHERE group_id = ? ORDER BY seq')
+      .all(groupId)
       .map((r) => {
         const base = entryFromRow({ ...r, status: 'queued' });
         const h: HistoryEntry = {
@@ -327,15 +368,15 @@ export class HistoryRepo {
       });
   }
 
-  append(entries: readonly HistoryEntry[]): void {
+  append(entries: readonly HistoryEntry[], groupId: string = MAIN_GROUP_ID): void {
     const insert = this.#db.prepare(
       `INSERT OR REPLACE INTO history (id, status, video_id, title, channel_title, thumbnail, duration_sec,
          source, requester_guest_id, requester_name, idempotency_key, enqueued_at, started_at, restarted,
-         fail_reason, skip_reason, ended_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         fail_reason, skip_reason, ended_at, group_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     for (const h of entries) {
-      insert.run(...entryParams(h), und(h.failReason), und(h.skipReason), h.endedAt);
+      insert.run(...entryParams(h), und(h.failReason), und(h.skipReason), h.endedAt, groupId);
     }
   }
 
@@ -666,6 +707,8 @@ export interface PlayerRow {
   deviceId: string;
   name: string;
   createdAt: number;
+  /** Last pairing (M2); the first pairing for rows written before M2. */
+  pairedAt: number;
   revokedAt: number | null;
 }
 
@@ -680,8 +723,26 @@ export class PlayersRepo {
       deviceId: str(r.device_id),
       name: str(r.name),
       createdAt: num(r.created_at),
+      pairedAt: r.paired_at == null ? num(r.created_at) : num(r.paired_at),
       revokedAt: nullNum(r.revoked_at),
     };
+  }
+
+  /** The device row, revoked or not. */
+  get(deviceId: string): PlayerRow | null {
+    const r = this.#db.prepare('SELECT * FROM players WHERE device_id = ?').get(deviceId);
+    return r === undefined ? null : this.#fromRow(r);
+  }
+
+  /** Marks the device revoked (its token stops working). False when unknown or already revoked. */
+  revoke(deviceId: string, now: number): boolean {
+    return (
+      Number(
+        this.#db
+          .prepare('UPDATE players SET revoked_at = ? WHERE device_id = ? AND revoked_at IS NULL')
+          .run(now, deviceId).changes,
+      ) > 0
+    );
   }
 
   list(): PlayerRow[] {
@@ -698,13 +759,15 @@ export class PlayersRepo {
     return r === undefined ? null : this.#fromRow(r);
   }
 
+  /** Creates the device or re-pairs it (new token, new name, un-revoked). */
   upsert(deviceId: string, name: string, tokenHash: string, now: number): void {
     this.#db
       .prepare(
-        `INSERT INTO players (device_id, name, token_hash, created_at) VALUES (?, ?, ?, ?)
-         ON CONFLICT (device_id) DO UPDATE SET token_hash = excluded.token_hash, revoked_at = NULL`,
+        `INSERT INTO players (device_id, name, token_hash, created_at, paired_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (device_id) DO UPDATE SET token_hash = excluded.token_hash, name = excluded.name,
+           paired_at = excluded.paired_at, revoked_at = NULL`,
       )
-      .run(deviceId, name, tokenHash, now);
+      .run(deviceId, name, tokenHash, now, now);
   }
 }
 
@@ -813,6 +876,165 @@ export class QuotaLogRepo {
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Rooms, groups, tombstones (M2)
+
+/** The hub's own group (its session keeps the M1 `session` row). */
+export const MAIN_GROUP_ID = 'main';
+
+export type LinkState = 'linked' | 'independent';
+
+export interface RoomRow {
+  deviceId: string;
+  name: string;
+  groupId: string;
+  linkState: LinkState;
+  lanAddress: string | null;
+  lastSeen: number;
+  createdAt: number;
+}
+
+export class RoomsRepo {
+  #db: Db;
+  constructor(db: Db) {
+    this.#db = db;
+  }
+
+  #fromRow(r: Row): RoomRow {
+    return {
+      deviceId: str(r.device_id),
+      name: str(r.name),
+      groupId: str(r.group_id),
+      linkState: str(r.link_state) === 'independent' ? 'independent' : 'linked',
+      lanAddress: nullStr(r.lan_address),
+      lastSeen: num(r.last_seen),
+      createdAt: num(r.created_at),
+    };
+  }
+
+  list(): RoomRow[] {
+    return this.#db
+      .prepare('SELECT * FROM rooms ORDER BY created_at, device_id')
+      .all()
+      .map((r) => this.#fromRow(r));
+  }
+
+  get(deviceId: string): RoomRow | null {
+    const r = this.#db.prepare('SELECT * FROM rooms WHERE device_id = ?').get(deviceId);
+    return r === undefined ? null : this.#fromRow(r);
+  }
+
+  upsert(room: RoomRow): void {
+    this.#db
+      .prepare(
+        `INSERT INTO rooms (device_id, name, group_id, link_state, lan_address, last_seen, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (device_id) DO UPDATE SET name = excluded.name, group_id = excluded.group_id,
+           link_state = excluded.link_state, lan_address = excluded.lan_address,
+           last_seen = excluded.last_seen`,
+      )
+      .run(
+        room.deviceId,
+        room.name,
+        room.groupId,
+        room.linkState,
+        room.lanAddress,
+        room.lastSeen,
+        room.createdAt,
+      );
+  }
+
+  seen(deviceId: string, lanAddress: string | null, at: number): void {
+    this.#db
+      .prepare('UPDATE rooms SET lan_address = ?, last_seen = ? WHERE device_id = ?')
+      .run(lanAddress, at, deviceId);
+  }
+
+  delete(deviceId: string): void {
+    this.#db.prepare('DELETE FROM rooms WHERE device_id = ?').run(deviceId);
+  }
+}
+
+export interface GroupRow {
+  groupId: string;
+  name: string;
+  leaderDeviceId: string | null;
+  createdAt: number;
+}
+
+export class GroupsRepo {
+  #db: Db;
+  constructor(db: Db) {
+    this.#db = db;
+  }
+
+  list(): GroupRow[] {
+    return this.#db
+      .prepare("SELECT * FROM groups ORDER BY group_id = 'main' DESC, created_at, group_id")
+      .all()
+      .map((r) => ({
+        groupId: str(r.group_id),
+        name: str(r.name),
+        leaderDeviceId: nullStr(r.leader_device_id),
+        createdAt: num(r.created_at),
+      }));
+  }
+
+  /** Inserts the group when absent (keeps an existing row's name). */
+  ensure(groupId: string, name: string, now: number): void {
+    this.#db
+      .prepare(
+        'INSERT OR IGNORE INTO groups (group_id, name, leader_device_id, created_at) VALUES (?, ?, NULL, ?)',
+      )
+      .run(groupId, name, now);
+  }
+
+  setLeader(groupId: string, leaderDeviceId: string | null): void {
+    this.#db
+      .prepare('UPDATE groups SET leader_device_id = ? WHERE group_id = ?')
+      .run(leaderDeviceId, groupId);
+  }
+
+  setName(groupId: string, name: string): void {
+    this.#db.prepare('UPDATE groups SET name = ? WHERE group_id = ?').run(name, groupId);
+  }
+
+  delete(groupId: string): void {
+    this.#db.prepare('DELETE FROM groups WHERE group_id = ?').run(groupId);
+  }
+}
+
+export interface TombstoneRow {
+  table: string;
+  id: string;
+  deletedAt: number;
+}
+
+export class TombstonesRepo {
+  #db: Db;
+  constructor(db: Db) {
+    this.#db = db;
+  }
+
+  add(table: string, id: string, at: number): void {
+    this.#db
+      .prepare('INSERT INTO tombstones (table_name, row_id, deleted_at) VALUES (?, ?, ?)')
+      .run(table, id, at);
+  }
+
+  /** Tombstones written at or after `since` (ms). */
+  since(since: number): TombstoneRow[] {
+    return this.#db
+      .prepare('SELECT * FROM tombstones WHERE deleted_at >= ? ORDER BY seq')
+      .all(since)
+      .map((r) => ({ table: str(r.table_name), id: str(r.row_id), deletedAt: num(r.deleted_at) }));
+  }
+
+  purgeBefore(at: number): void {
+    this.#db.prepare('DELETE FROM tombstones WHERE deleted_at < ?').run(at);
+  }
+}
+
 /** Every repository over one database. */
 export class Repos {
   readonly db: Db;
@@ -830,6 +1052,9 @@ export class Repos {
   readonly loginAttempts: LoginAttemptsRepo;
   readonly events: EventsRepo;
   readonly quotaLog: QuotaLogRepo;
+  readonly rooms: RoomsRepo;
+  readonly groups: GroupsRepo;
+  readonly tombstones: TombstonesRepo;
 
   constructor(db: Db) {
     this.db = db;
@@ -847,5 +1072,8 @@ export class Repos {
     this.loginAttempts = new LoginAttemptsRepo(db);
     this.events = new EventsRepo(db);
     this.quotaLog = new QuotaLogRepo(db);
+    this.rooms = new RoomsRepo(db);
+    this.groups = new GroupsRepo(db);
+    this.tombstones = new TombstonesRepo(db);
   }
 }
